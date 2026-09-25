@@ -95,8 +95,8 @@ enum UIRender {
                 .environmentObject(ai)
             Divider()
             EntryListView(title: "全部日记",
-                          subtitle: "共 \(store.entries.count) 篇 · \(store.totalWords()) 字",
-                          entries: store.entries,
+                          subtitle: "共 \(store.visible.count) 篇 · \(store.totalWords()) 字",
+                          entries: store.visible,
                           selectedId: .constant(todayId),
                           onCreate: {},
                           showDayHeader: true)

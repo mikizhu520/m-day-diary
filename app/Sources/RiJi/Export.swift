@@ -80,11 +80,17 @@ enum Exporter {
     }
 
     /// 全库备份为 JSON
+    ///
+    /// 走的是 `visible` 而不是 `entries`：上锁且未解锁的日记本不进备份。
+    /// 理由和别处一致 —— 这是一份**可以随手发出去**的文件，
+    /// 不能因为「顺手备份」就把锁住的内容绕出去。要备份那几本，先解锁再导。
     static func backupJSON(store: Store) {
         let payload: [String: Any] = [
             "exportedAt": Fmt.iso.string(from: Date()),
-            "journals": store.journals.map { ["id": $0.id, "name": $0.name, "color": $0.colorHex] },
-            "entries": store.entries.map { e in
+            "journals": store.journals.map {
+                ["id": $0.id, "name": $0.name, "color": $0.colorHex, "locked": $0.locked]
+            },
+            "entries": store.visible.map { e in
                 [
                     "id": e.id,
                     "journalId": e.journalId,
@@ -103,7 +109,7 @@ enum Exporter {
         }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "日迹备份-\(Fmt.day.string(from: Date())).json"
+        panel.nameFieldStringValue = "MDay备份-\(Fmt.day.string(from: Date())).json"
         panel.prompt = "备份"
         if panel.runModal() == .OK, let url = panel.url {
             do {

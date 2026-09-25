@@ -293,6 +293,7 @@ struct AIPanel: View {
 
     private func contextEntries() -> [Entry] {
         let cal = Calendar.current
+        // 一律走 `visible`：上锁且未解锁的日记本，内容不该被塞进给模型的上下文里
         switch scope {
         case "current":
             if let e = currentEntry { return [e] }
@@ -301,11 +302,11 @@ struct AIPanel: View {
             return store.entries(on: Date())
         case "week":
             let from = cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: Date())) ?? Date()
-            return store.entries.filter { $0.createdAt >= from }
+            return store.visible.filter { $0.createdAt >= from }
         case "month":
-            return store.entries.filter { cal.isDate($0.createdAt, equalTo: Date(), toGranularity: .month) }
+            return store.visible.filter { cal.isDate($0.createdAt, equalTo: Date(), toGranularity: .month) }
         default:
-            return Array(store.entries.prefix(60))
+            return Array(store.visible.prefix(60))
         }
     }
 
@@ -371,17 +372,17 @@ struct AIPanel: View {
             prompt = AIPrompts.summarizeDay(entries, date: Date())
         case "week":
             let from = cal.date(byAdding: .day, value: -6, to: today) ?? today
-            entries = store.entries.filter { $0.createdAt >= from }
+            entries = store.visible.filter { $0.createdAt >= from }
             label = "最近 7 天"
             guard !entries.isEmpty else { store.show("最近 7 天还没有日记"); return }
             prompt = AIPrompts.summarizeRange(entries, label: label)
         case "month":
-            entries = store.entries.filter { cal.isDate($0.createdAt, equalTo: Date(), toGranularity: .month) }
+            entries = store.visible.filter { cal.isDate($0.createdAt, equalTo: Date(), toGranularity: .month) }
             label = "本月"
             guard !entries.isEmpty else { store.show("本月还没有日记"); return }
             prompt = AIPrompts.summarizeRange(entries, label: label)
         default:
-            entries = Array(store.entries.prefix(30))
+            entries = Array(store.visible.prefix(30))
             guard !entries.isEmpty else { store.show("还没有日记"); return }
             label = "最近的日记"
             prompt = AIPrompts.summarizeRange(entries, label: label) + "\n\n另外：请重点分析情绪变化规律，指出反复出现的压力源和恢复方式。"

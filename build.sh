@@ -28,18 +28,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>日迹</string>
-    <key>CFBundleDisplayName</key><string>日迹</string>
+    <key>CFBundleName</key><string>MDay</string>
+    <key>CFBundleDisplayName</key><string>MDay</string>
     <key>CFBundleExecutable</key><string>RiJi</string>
     <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$VERSION</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSHumanReadableCopyright</key><string>日迹 · 本地 Markdown 日记本</string>
+    <key>NSHumanReadableCopyright</key><string>MDay · 本地优先的 Markdown 日记本 · Miki Zhu</string>
     <key>NSFaceIDUsageDescription</key><string>用面容 ID 快速解锁你的日记</string>
     <key>CFBundleLocalizations</key><array><string>zh_CN</string></array>
     <key>NSSupportsAutomaticTermination</key><false/>

@@ -26,7 +26,9 @@ struct LockView: View {
                     lockBadge
 
                     VStack(spacing: 6) {
-                        Text("日迹").font(.rj(28, weight: .bold, design: .rounded))
+                        // 取 AppInfo 而不是写死字符串：显示名改过一次（日迹 → MDay），
+                        // 写死的地方就漏了一处，锁屏上还挂着旧名字。
+                        Text(AppInfo.name).font(.rj(28, weight: .bold, design: .rounded))
                         Text(canUseBiometric ? "按一下\(store.biometryName)，或输入密码" : "输入密码解锁你的日记")
                             .font(.rj(13.5))
                             .foregroundStyle(.secondary)
@@ -100,7 +102,7 @@ struct LockView: View {
                         }
 
                         if showHint {
-                            Text("密码只保存在本机，无法找回。\n如果确实忘了：退出「日迹」，删除\n~/Library/Application Support/日迹/config.json\n后重新打开即可重置（注意：如果没有开启加密，日记内容不受影响；开了加密则日记会无法解密）。")
+                            Text("密码只保存在本机，无法找回。\n如果确实忘了：退出 \(AppInfo.name)，删除\n~/Library/Application Support/日迹/config.json\n后重新打开即可重置（注意：如果没有开启加密，日记内容不受影响；开了加密则日记会无法解密）。")
                                 .font(.rj(12))
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
@@ -288,7 +290,7 @@ struct OnboardingView: View {
                             .font(.rj(28, weight: .bold))
                             .foregroundStyle(.white)
                     }
-                    Text("欢迎使用 日迹").font(.rj(24, weight: .bold, design: .rounded))
+                    Text("欢迎使用 \(AppInfo.name)").font(.rj(24, weight: .bold, design: .rounded))
                     Text("本地优先的 Markdown 日记本，数据只存在你的电脑里。")
                         .font(.rj(13))
                         .foregroundStyle(.secondary)

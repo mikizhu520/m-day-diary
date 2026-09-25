@@ -39,6 +39,12 @@ struct Journal: Identifiable, Codable, Hashable {
     var colorHex: String
     var symbol: String
     var createdAt: Date = Date()
+    /// 单独上锁：点开这一本时要先过指纹 / 密码。
+    ///
+    /// 校验用的是**全局打开密码**（`SecurityRecord`），不另设一套 ——
+    /// 否则「日记本密码」和「打开密码」两个熵源并存，忘一个就等于丢一半数据。
+    /// 所以上锁的前提是设过打开密码；没设时界面会把开关禁掉。
+    var locked: Bool = false
 
     static let defaults: [Journal] = [
         Journal(name: "日常", colorHex: "#E8623C", symbol: "sun.max.fill"),
@@ -113,7 +119,7 @@ struct Journal: Identifiable, Codable, Hashable {
 
 extension Journal {
     enum CodingKeys: String, CodingKey {
-        case id, name, colorHex, symbol, createdAt
+        case id, name, colorHex, symbol, createdAt, locked
     }
 
     init(from decoder: Decoder) throws {
@@ -136,6 +142,8 @@ extension Journal {
         symbol = sym.isEmpty ? Journal.fallbackSymbol : sym
 
         createdAt = value(.createdAt, Date())
+        // 旧 config.json 里没有这一项 → 默认不上锁（等于保持老行为）
+        locked = value(.locked, false)
     }
 }
 
@@ -178,6 +186,8 @@ struct JournalDraft: Identifiable, Equatable {
     var name: String = ""
     var colorHex: String = RJ.accentDefault
     var symbol: String = Journal.fallbackSymbol
+    /// 是否给这一本单独上锁
+    var locked: Bool = false
 
     var isNew: Bool { id.isEmpty }
 
@@ -202,8 +212,19 @@ struct JournalDraft: Identifiable, Equatable {
     }
 
     static func editing(_ j: Journal) -> JournalDraft {
-        JournalDraft(id: j.id, name: j.name, colorHex: j.colorHex, symbol: j.symbol)
+        JournalDraft(id: j.id, name: j.name, colorHex: j.colorHex, symbol: j.symbol,
+                     locked: j.locked)
     }
+}
+
+// MARK: - 日记本解锁请求
+//
+// 侧边栏点到一本锁着的日记本时，就往 `Store.journalGate` 里塞一个这个，
+// 根视图看到非 nil 就弹解锁面板。做成独立结构体是为了能用 `.sheet(item:)` ——
+// 直接存 String 没法让 SwiftUI 判断「内容变了要重建」。
+
+struct JournalGate: Identifiable, Equatable {
+    var id: String
 }
 
 // MARK: - 日记条目

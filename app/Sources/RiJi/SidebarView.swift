@@ -62,7 +62,7 @@ struct SidebarView: View {
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(AppInfo.name).font(.rj(15, weight: .bold, design: .rounded))
-                    Text("\(store.entries.count) 篇 · \(store.totalWords()) 字")
+                    Text("\(store.visible.count) 篇 · \(store.totalWords()) 字")
                         .font(.rj(11.5))
                         .foregroundStyle(.secondary)
                 }
@@ -107,7 +107,7 @@ struct SidebarView: View {
             row(scope: .today, symbol: "calendar.badge.clock", title: "今天",
                 count: store.entries(on: Date()).count)
             row(scope: .all, symbol: "books.vertical.fill", title: "全部日记",
-                count: store.entries.count)
+                count: store.visible.count)
             row(scope: .onThisDay, symbol: "clock.arrow.circlepath", title: "那年今日",
                 count: store.onThisDayEntries.count)
             row(scope: .calendar, symbol: "calendar", title: "日历", count: nil)
@@ -162,6 +162,19 @@ struct SidebarView: View {
                         rowHeight: journalRowHeight))
                     .contextMenu {
                         Button("编辑日记本…") { store.beginEditJournal(j) }
+                        Divider()
+                        if j.locked {
+                            if store.isJournalLocked(j.id) {
+                                Button("解锁…") { store.requestJournalUnlock(j.id) }
+                            } else {
+                                // 已经解开过了，给一个「现在马上锁回去」的入口 ——
+                                // 把电脑递给别人之前得能一键关上
+                                Button("立即重新上锁") { store.relockJournal(j.id) }
+                            }
+                        }
+                        Button(j.locked ? "取消单独上锁" : "单独上锁…") {
+                            store.setJournalLocked(j.id, !j.locked)
+                        }
                         Divider()
                         // 拖拽之外的第二条路：触控板不好拖、或者想精确挪一格的时候用
                         Button("上移") { shift(j, by: -1) }
@@ -223,15 +236,21 @@ struct SidebarView: View {
     private func journalRow(_ j: Journal) -> some View {
         let active = scope == .journal(j.id)
         let color = Color(hex: j.colorHex)
+        let closed = store.isJournalLocked(j.id)
         return SidebarRow(active: active,
                           symbol: nil,
                           dotColor: color,
                           badgeSymbol: j.symbol,
                           title: j.name,
-                          count: store.journalCount(j.id),
+                          // 锁着的时候不显示篇数：篇数本身就是信息
+                          //（「工作」有 12 篇，这件事不想让别人扫一眼就知道）
+                          count: closed ? nil : store.journalCount(j.id),
                           tint: color,
-                          trailingPin: store.settings.defaultJournalId == j.id) {
-            scope = .journal(j.id)
+                          trailingPin: store.settings.defaultJournalId == j.id,
+                          // 关闭的锁 = 还没解；打开的锁 = 上锁但本次已解
+                          trailingLock: closed ? "lock.fill" : (j.locked ? "lock.open" : nil)) {
+            // 锁着的本子点不开内容，先弹解锁面板
+            if closed { store.requestJournalUnlock(j.id) } else { scope = .journal(j.id) }
         }
     }
 
@@ -269,52 +288,67 @@ struct SidebarView: View {
     private var footer: some View {
         VStack(spacing: 0) {
             HairLine()
-            HStack(spacing: 9) {
+            // 两行，不是一行。
+            //
+            // 原来「写日记 + 九宫格 + 锁 + 设置」挤在一行里。侧边栏最小宽 226，
+            // 减掉左右内边距 26 只剩 200；三个图标按钮（32×3）加三个间距（9×3）吃掉 123，
+            // 留给「写日记」的只有 77。而「写日记」三个字在 1.30 倍字号下要 ≈77pt 文字
+            // 再加图标和按钮内边距 ≈105pt —— 塞不下，于是「写日」和「记」折成两行。
+            //
+            // 单行怎么调都只是在赌字号：界面字号有「特大」档（1.46），到那一档更塞不下。
+            // 所以拆成两行：上面一整行给主操作，下面一行放三个次级按钮。
+            VStack(spacing: 8) {
                 Button {
                     NotificationCenter.default.post(name: .rjNewEntry, object: nil)
                 } label: {
                     Label("写日记", systemImage: "square.and.pencil")
                         .font(.rj(13, weight: .semibold))
+                        // 钉死单行：宁可挤掉别的，也不许它自己折行
+                        .lineLimit(1)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 3)
                 }
                 .buttonStyle(RJSubtleButtonStyle())
                 .keyboardShortcut("n", modifiers: .command)
 
-                // 九宫格日记：按住弹出模板列表，直接点就是第一张模板。
-                // 用 Menu 而不是按钮，是因为模板是用户可增可改的 ——
-                // 每次打开才知道有哪些。
-                Menu {
-                    ForEach(store.gridTemplates) { t in
-                        Button {
-                            NotificationCenter.default.post(name: .rjNewGridEntry, object: t.id)
-                        } label: {
-                            Label(t.name, systemImage: t.symbol)
+                HStack(spacing: 9) {
+                    // 九宫格日记：按住弹出模板列表，直接点就是第一张模板。
+                    // 用 Menu 而不是按钮，是因为模板是用户可增可改的 ——
+                    // 每次打开才知道有哪些。
+                    Menu {
+                        ForEach(store.gridTemplates) { t in
+                            Button {
+                                NotificationCenter.default.post(name: .rjNewGridEntry, object: t.id)
+                            } label: {
+                                Label(t.name, systemImage: t.symbol)
+                            }
                         }
+                        Divider()
+                        Button("新建九宫格日记…") { NotificationCenter.default.post(name: .rjNewGridEntry, object: nil) }
+                            .keyboardShortcut("n", modifiers: [.command, .shift])
+                    } label: {
+                        Image(systemName: "square.grid.3x3.fill")
+                            .font(.rj(14))
+                            .frame(width: 32, height: 26)
+                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
-                    Divider()
-                    Button("新建九宫格日记…") { NotificationCenter.default.post(name: .rjNewGridEntry, object: nil) }
-                        .keyboardShortcut("n", modifiers: [.command, .shift])
-                } label: {
-                    Image(systemName: "square.grid.3x3.fill")
-                        .font(.rj(14))
-                        .frame(width: 32, height: 26)
-                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("九宫格日记（⌘⇧N）")
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("九宫格日记（⌘⇧N）")
 
-                IconButton(symbol: "lock.fill", help: "锁定 (⌘L)", size: 32, iconSize: 14) {
-                    store.lock()
-                }
-                IconButton(symbol: "gearshape.fill", help: "设置 (⌘,)", size: 32, iconSize: 14) {
-                    NotificationCenter.default.post(name: .rjOpenSettings, object: nil)
+                    Spacer(minLength: 0)
+
+                    IconButton(symbol: "lock.fill", help: "锁定 (⌘L)", size: 32, iconSize: 14) {
+                        store.lock()
+                    }
+                    IconButton(symbol: "gearshape.fill", help: "设置 (⌘,)", size: 32, iconSize: 14) {
+                        NotificationCenter.default.post(name: .rjOpenSettings, object: nil)
+                    }
                 }
             }
             .padding(.horizontal, 13)
-            .padding(.vertical, 11)
+            .padding(.vertical, 10)
         }
         .background(Color.rjBar)
     }
@@ -399,6 +433,8 @@ struct SidebarRow: View {
     var count: Int? = nil
     var tint: Color = .rjAccent
     var trailingPin: Bool = false
+    /// 尾巴上的锁图标。`nil` = 不显示；给 "lock.fill" / "lock.open" 两种。
+    var trailingLock: String? = nil
     var action: () -> Void
 
     @State private var hovering = false
@@ -431,6 +467,12 @@ struct SidebarRow: View {
                     Image(systemName: "pin.fill")
                         .font(.rj(9))
                         .foregroundStyle(active ? Color.white.opacity(0.75) : Color.secondary)
+                }
+                if let trailingLock {
+                    Image(systemName: trailingLock)
+                        .font(.rj(9.5))
+                        .foregroundStyle(active ? Color.white.opacity(0.8) : Color.secondary)
+                        .help(trailingLock == "lock.fill" ? "已上锁，点开需解锁" : "已上锁（本次已解开）")
                 }
                 if let count, count > 0 {
                     Text("\(count)")

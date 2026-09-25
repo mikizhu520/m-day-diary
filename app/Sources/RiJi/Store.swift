@@ -55,6 +55,17 @@ final class Store: ObservableObject {
     /// 询问期间暂存刚输入的密码（仅内存，用于一键开启）
     private var biometricOfferPassword: String?
 
+    // MARK: 日记本锁
+
+    /// 本次会话里**已经解开**的日记本 id。
+    ///
+    /// 只活在内存里，不落盘 —— 关掉 App 或按 ⌘L 就全部归零。
+    /// 这是刻意的：锁的意义就是「这次打开得先证明是你」，
+    /// 如果记到磁盘上，第二天开机它自己就开了，等于没锁。
+    @Published var unlockedJournals: Set<String> = []
+    /// 非 nil 就弹解锁面板（见 Models.swift 的 JournalGate）
+    @Published var journalGate: JournalGate?
+
     // MARK: 运行时状态
 
     private(set) var masterKey: SymmetricKey?
@@ -160,6 +171,11 @@ final class Store: ObservableObject {
     func removePassword() {
         security = SecurityRecord()
         disableBiometric()
+        // 打开密码没了，日记本的单独锁就没有可校验的东西了 —— 一并取消，
+        // 否则会留下一堆「点了就弹密码框、但根本没有密码」的死结。
+        for i in journals.indices { journals[i].locked = false }
+        unlockedJournals.removeAll()
+        journalGate = nil
         saveConfig()
         isLocked = false
     }
@@ -217,10 +233,99 @@ final class Store: ObservableObject {
         guard security.hasPassword else { return }
         masterKey = nil
         isLocked = true
+        // 整个 App 锁上时，日记本那一层也一起归零 —— 否则重新进来
+        // 会发现「刚解锁过的本子还开着」，那一层锁就白上了。
+        unlockedJournals.removeAll()
+        journalGate = nil
         toast = "已锁定"
     }
 
     func touch() { lastActivity = Date() }
+
+    // MARK: - 日记本的单独锁
+
+    /// 这一本现在是不是「锁着且本次会话还没解开」。
+    ///
+    /// 注意判断的是**未解锁**状态，不是 `journal.locked`：
+    /// 上锁的日记本在解开之后，界面表现和普通日记本完全一样。
+    func isJournalLocked(_ id: String) -> Bool {
+        guard let j = journal(for: id), j.locked else { return false }
+        return !unlockedJournals.contains(id)
+    }
+
+    /// 有没有任何一本是上锁的（用来决定要不要显示「解锁」相关的提示）
+    var hasLockedJournals: Bool { journals.contains { $0.locked } }
+
+    /// 有没有「锁着还没解开」的
+    var hasClosedJournals: Bool { journals.contains { isJournalLocked($0.id) } }
+
+    /// 对外可见的日记。
+    ///
+    /// 所有列表 / 搜索 / 统计 / 日历 / AI 上下文 / 导出都必须走这里。
+    /// 否则锁就只是个摆设 —— 点「全部日记」照样能看见里面的内容。
+    var visible: [Entry] { entries.filter { !isJournalLocked($0.journalId) } }
+
+    /// 点了一本锁着的日记本：弹解锁面板
+    func requestJournalUnlock(_ id: String) {
+        guard isJournalLocked(id) else { return }
+        journalGate = JournalGate(id: id)
+    }
+
+    func cancelJournalGate() { journalGate = nil }
+
+    /// 用密码解锁一本日记本。校验的是全局打开密码。
+    @discardableResult
+    func unlockJournal(_ id: String, password: String) -> Bool {
+        guard isJournalLocked(id) else { return true }
+        // 没设过全局密码（例如配置文件被手改过）时没有可校验的东西，直接放行，
+        // 免得出现「这本怎么都打不开」的死结。
+        if security.hasPassword, !verify(password) { return false }
+        unlockedJournals.insert(id)
+        touch()
+        return true
+    }
+
+    /// 用指纹解锁一本日记本：先过生物识别，再从保险库取回密码校验一次。
+    @discardableResult
+    func unlockJournalWithBiometric(_ id: String) async -> Bool {
+        guard isJournalLocked(id),
+              security.hasPassword,
+              biometricEnabled, Biometric.isAvailable else { return false }
+        let name = journal(for: id)?.name ?? "日记本"
+        biometricIssue = nil
+        guard await Biometric.verify(reason: "解锁日记本「\(name)」") else { return false }
+        guard let pwd = Biometric.readPassword(), verify(pwd) else {
+            biometricIssue = "\(biometryName)解锁已失效，请先输一次密码，之后就会自动恢复。"
+            return false
+        }
+        unlockedJournals.insert(id)
+        touch()
+        return true
+    }
+
+    /// 立刻重新锁上（本次会话的解锁态清掉，内容马上从所有列表里消失）
+    func relockJournal(_ id: String) {
+        guard unlockedJournals.contains(id) else { return }
+        unlockedJournals.remove(id)
+        show("「\(journal(for: id)?.name ?? "日记本")」已重新上锁")
+    }
+
+    /// 打开 / 关闭某一本的「单独上锁」
+    @discardableResult
+    func setJournalLocked(_ id: String, _ locked: Bool) -> Bool {
+        guard let idx = journals.firstIndex(where: { $0.id == id }) else { return false }
+        if locked, !security.hasPassword {
+            show("请先在「设置 → 安全」里设置打开密码")
+            return false
+        }
+        journals[idx].locked = locked
+        if !locked { unlockedJournals.remove(id) }
+        saveConfig()
+        objectWillChange.send()
+        show(locked ? "「\(journals[idx].name)」已上锁" : "「\(journals[idx].name)」已取消上锁")
+        return true
+    }
+
 
     // MARK: - 触控 ID / 面容 ID 解锁
 
@@ -591,6 +696,14 @@ final class Store: ObservableObject {
     }
 
     func defaultJournalId() -> String {
+        // 默认本子锁着的时候，落到第一本还开着的里去 ——
+        // 否则 ⌘N 会悄悄把日记写进一个你当场看不见的地方
+        if !settings.defaultJournalId.isEmpty,
+           let j = journal(for: settings.defaultJournalId),
+           !isJournalLocked(j.id) {
+            return j.id
+        }
+        if let open = journals.first(where: { !isJournalLocked($0.id) }) { return open.id }
         if !settings.defaultJournalId.isEmpty { return settings.defaultJournalId }
         return journals.first?.id ?? "default"
     }
@@ -654,8 +767,11 @@ final class Store: ObservableObject {
     /// 所以磁盘上的目录 journals/<id>/ 和已有日记都不受影响）。
     func commitJournalDraft(_ draft: JournalDraft) {
         let d = draft.sanitized()
+        // 上锁的前提是有打开密码，没设就静默降级成不上锁
+        let wantLock = d.locked && security.hasPassword
         if d.isNew {
-            let j = Journal(name: d.name, colorHex: d.colorHex, symbol: d.symbol)
+            var j = Journal(name: d.name, colorHex: d.colorHex, symbol: d.symbol)
+            j.locked = wantLock
             journals.append(j)
             saveConfig()
             objectWillChange.send()
@@ -666,6 +782,12 @@ final class Store: ObservableObject {
             journals[idx].name = d.name
             journals[idx].colorHex = d.colorHex
             journals[idx].symbol = d.symbol
+            // 编辑时**不覆盖**已有的 locked 状态，除非用户真的动了这个开关 ——
+            // 打开编辑窗看一眼名字就把锁弄丢，是会让人骂人的。
+            if wantLock != journals[idx].locked {
+                journals[idx].locked = wantLock
+                if !wantLock { unlockedJournals.remove(d.id) }
+            }
             saveConfig()
             objectWillChange.send()
             show("已保存")
@@ -715,6 +837,8 @@ final class Store: ObservableObject {
     func deleteJournal(_ journal: Journal) {
         guard journals.count > 1 else { toast = "至少保留一个日记本"; return }
         journals.removeAll { $0.id == journal.id }
+        unlockedJournals.remove(journal.id)
+        if journalGate?.id == journal.id { journalGate = nil }
         if settings.defaultJournalId == journal.id {
             settings.defaultJournalId = journals.first?.id ?? ""
         }
@@ -838,21 +962,25 @@ final class Store: ObservableObject {
     }
 
     // MARK: - 检索
+    //
+    // 这里的方法全部基于 `visible`，不是 `entries` —— 上锁且未解锁的日记本，
+    // 里面的日记不该出现在任何列表、搜索、统计里。要拿全量（写盘、导出配置之类）
+    // 就直接读 `entries`，但那样等于绕过锁，用之前先想清楚。
 
     func entries(inJournal journalId: String?) -> [Entry] {
-        guard let journalId else { return entries }
-        return entries.filter { $0.journalId == journalId }
+        guard let journalId else { return visible }
+        return visible.filter { $0.journalId == journalId }
     }
 
     func entries(on day: Date) -> [Entry] {
         let key = Fmt.day.string(from: day)
-        return entries.filter { $0.dayKey == key }.sorted { $0.createdAt < $1.createdAt }
+        return visible.filter { $0.dayKey == key }.sorted { $0.createdAt < $1.createdAt }
     }
 
     func search(_ query: String) -> [Entry] {
         let q = query.trimmed.lowercased()
         guard !q.isEmpty else { return [] }
-        return entries.filter { e in
+        return visible.filter { e in
             e.title.lowercased().contains(q)
                 || e.body.lowercased().contains(q)
                 || e.tags.joined(separator: " ").lowercased().contains(q)
@@ -861,11 +989,11 @@ final class Store: ObservableObject {
 
     var allTags: [(String, Int)] {
         var counts: [String: Int] = [:]
-        for e in entries { for t in e.tags { counts[t, default: 0] += 1 } }
+        for e in visible { for t in e.tags { counts[t, default: 0] += 1 } }
         return counts.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
     }
 
-    var dayKeys: Set<String> { Set(entries.map { $0.dayKey }) }
+    var dayKeys: Set<String> { Set(visible.map { $0.dayKey }) }
 
     var streak: Int {
         let cal = Calendar.current
@@ -885,14 +1013,14 @@ final class Store: ObservableObject {
         let m = cal.component(.month, from: now)
         let d = cal.component(.day, from: now)
         let y = cal.component(.year, from: now)
-        return entries.filter { e in
+        return visible.filter { e in
             cal.component(.month, from: e.createdAt) == m
                 && cal.component(.day, from: e.createdAt) == d
                 && cal.component(.year, from: e.createdAt) != y
         }.sorted { $0.createdAt > $1.createdAt }
     }
 
-    func totalWords() -> Int { entries.reduce(0) { $0 + $1.wordCount } }
+    func totalWords() -> Int { visible.reduce(0) { $0 + $1.wordCount } }
 
     // MARK: - 配置持久化
 

@@ -153,6 +153,28 @@ enum SnapshotRunner {
             await settle(1.0)
         }
 
+        // 日记本单独上锁。把最后一本锁上：侧边栏会出现闭合的锁、篇数隐掉，
+        // 点它会弹解锁面板。拍完就还原，免得影响后面的日历 / 统计（那些图要的是全量数据）。
+        if let idx = store.journals.indices.last {
+            let lockedId = store.journals[idx].id
+            store.journals[idx].locked = true
+            store.unlockedJournals.removeAll()
+            store.objectWillChange.send()
+            await settle(1.5)
+            capture(store: store, "03f-journal-locked")
+
+            store.requestJournalUnlock(lockedId)
+            await settle(1.7)
+            dumpSheets("日记本解锁")
+            capture(store: store, "03g-journal-unlock", sheet: true)
+            store.cancelJournalGate()
+            await settle(1.0)
+
+            store.journals[idx].locked = false
+            store.objectWillChange.send()
+            await settle(0.9)
+        }
+
         // 九宫格日记面板。先拍「填到一半」的样子（把答案预填进去），
         // 再拍一张空白骨架 + 换到晨间模板的样子。
         store.gridDraft = GridDraft(
@@ -190,6 +212,13 @@ enum SnapshotRunner {
         await settle(1.0)
         capture(store: store, "05-stats")
 
+        // 窄宽度回归：把窗口压到最小，检查侧边栏会不会被系统折叠、工具条会不会撑破布局。
+        //
+        // 这两张（01g / 02b）原来要**另外单独跑一次** `RJ_WIN=1120x700 … --snapshot`，
+        // 结果就是长期忘记跑、图一直停在旧版本上（肉眼完全看不出来，因为文件名没变）。
+        // 现在并进主流程：自己改窗口尺寸、拍完再改回去。
+        await narrowPass(store: store)
+
         // 锁屏
         store.security.hasPassword = true
         store.lock()
@@ -198,6 +227,35 @@ enum SnapshotRunner {
 
         print("✓ 截图完成")
         exit(0)
+    }
+
+    /// 窄宽度那两张。
+    ///
+    /// 窗口最小宽 1120 是「侧边栏 226 + 中栏 286 + 编辑区 ~300 + AI 面板 300」推出来的，
+    /// 所以这个宽度必须真的能站住 —— 一旦某处写了 `frame(width:)` 硬撑，
+    /// 系统会把最左边那一栏整个收走（之前「打开 AI 助手，左侧导航被挤跑」就是这个）。
+    private static func narrowPass(store: Store) async {
+        guard let w = targetWindow(sheet: false) else { return }
+        let backup = w.contentView?.bounds.size ?? .zero
+
+        // 先回到「今天」，让窄版主界面拍的是常规状态而不是刚拍完的统计页
+        NotificationCenter.default.post(name: .rjGoToday, object: nil)
+        w.setContentSize(NSSize(width: 1120, height: 700))
+        w.center()
+        await settle(1.6)
+        print("▶︎ 窄宽度回归 1120×700")
+        capture(store: store, "01g-main-narrow")
+
+        NotificationCenter.default.post(name: .rjToggleAI, object: nil)
+        await settle(2.2)
+        capture(store: store, "02b-ai-panel-narrow")
+        NotificationCenter.default.post(name: .rjToggleAI, object: nil)
+        await settle(1.2)
+
+        // 还原。用备份的尺寸而不是写死 1440×840 —— RJ_WIN 覆盖过的时候要还回覆盖值。
+        if backup.width > 100 { w.setContentSize(backup) }
+        w.center()
+        await settle(1.3)
     }
 
     // MARK: 逐张抓图
@@ -443,7 +501,7 @@ enum DemoContent {
         var list: [Entry] = []
 
         var e1 = Entry(journalId: daily, createdAt: at(0, 22, 41), updatedAt: at(0, 22, 41))
-        e1.title = "把「日迹」的界面重做了一遍"
+        e1.title = "把「MDay」的界面重做了一遍"
         e1.body = """
         今天最大的收获，是想明白了一件事：**界面丑不是审美问题，是细节密度的问题**。
 
@@ -487,9 +545,9 @@ enum DemoContent {
 
         var e3 = Entry(journalId: health, createdAt: at(0, 7, 30), updatedAt: at(0, 7, 30))
         e3.body = """
-        早上称了体重，比上周轻了 0.4 斤。
+        昨晚睡了七个小时，中间醒过一次，之后又睡回去了。
 
-        早餐是两个鸡蛋加一杯牛奶，饭后走了二十分钟。
+        早上出门前做了十分钟拉伸，肩膀松了不少。
         """
         e3.mood = "🙂"
         e3.tags = ["健康"]
@@ -517,10 +575,10 @@ enum DemoContent {
         list.append(e6)
 
         var e7 = Entry(journalId: daily, createdAt: at(5, 21, 2), updatedAt: at(5, 21, 2))
-        e7.title = "回某淀"
+        e7.title = "回家"
         e7.body = "火车上人不多，窗外是大片的平地。到家的时候妈妈已经做好饭了。"
         e7.mood = "🥳"
-        e7.weather = WeatherInfo(kind: .rain, temp: 19.2, city: "某县")
+        e7.weather = WeatherInfo(kind: .rain, temp: 19.2, city: "杭州")
         list.append(e7)
 
         return list

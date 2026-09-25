@@ -55,7 +55,7 @@ struct RiJiApp: App {
             }
             CommandGroup(after: .appSettings) {
                 Divider()
-                Button("锁定日迹") { store.lock() }
+                Button("锁定 \(AppInfo.name)") { store.lock() }
                     .keyboardShortcut("l", modifiers: .command)
             }
             CommandMenu("日记") {
@@ -122,6 +122,20 @@ struct RootView: View {
         // 在一张还没关干净的时候请求另一张会被系统直接丢掉。
         .sheet(item: $store.journalDraft) { draft in
             JournalEditor(draft: draft).environmentObject(store)
+        }
+        // 日记本单独上锁的解锁面板。和上面那个编辑窗同一级，
+        // 都是「整个窗口的一次请求」，所以挂在根视图上而不是任何一栏里。
+        .sheet(item: $store.journalGate) { gate in
+            JournalUnlockView(
+                journalId: gate.id,
+                onUnlocked: { id in
+                    store.cancelJournalGate()
+                    // 解开之后顺手切过去 —— 用户点它本来就是为了看里面的内容
+                    NotificationCenter.default.post(name: .rjSelectJournal, object: id)
+                },
+                onCancel: { store.cancelJournalGate() }
+            )
+            .environmentObject(store)
         }
     }
 
@@ -250,6 +264,14 @@ struct MainView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .rjScopeCalendar)) { _ in scope = .calendar }
         .onReceive(NotificationCenter.default.publisher(for: .rjScopeStats)) { _ in scope = .stats }
+        .onChange(of: store.unlockedJournals) { _, _ in
+            // 正在看的那一本被重新锁上（右键「立即重新上锁」）→ 退回「今天」，
+            // 别把一个空列表留在屏幕上让人以为是丢数据了。
+            if case .journal(let id) = scope ?? .today, store.isJournalLocked(id) {
+                scope = .today
+                selectedId = nil
+            }
+        }
         .onAppear { initialSelect() }
     }
 
@@ -309,17 +331,17 @@ struct MainView: View {
         let cal = Calendar.current
         let now = Date()
         let today = store.entries(on: now)
-        let thisWeek = store.entries.filter {
+        let thisWeek = store.visible.filter {
             cal.isDate($0.createdAt, equalTo: now, toGranularity: .weekOfYear)
         }
-        let thisMonth = store.entries.filter {
+        let thisMonth = store.visible.filter {
             cal.isDate($0.createdAt, equalTo: now, toGranularity: .month)
         }
         let weekWords = thisWeek.reduce(0) { $0 + $1.wordCount }
         let dayKeys = store.dayKeys
         let activeDays = max(dayKeys.count, 1)
-        let lastAt = store.entries.map(\.createdAt).max()
-        let openTodos = store.entries.reduce(0) { acc, e in
+        let lastAt = store.visible.map(\.createdAt).max()
+        let openTodos = store.visible.reduce(0) { acc, e in
             acc + e.body.split(separator: "\n").filter {
                 $0.trimmingCharacters(in: .whitespaces).hasPrefix("- [ ]")
             }.count
@@ -364,7 +386,7 @@ struct MainView: View {
         // 这样打开时只会压缩编辑区，不会挤到侧边栏（见 App.swift 里 detail: 那段注释）。
         if scope == .stats {
             StatsView()
-        } else if let selectedId, store.entries.contains(where: { $0.id == selectedId }) {
+        } else if let selectedId, store.visible.contains(where: { $0.id == selectedId }) {
             EditorView(entryId: selectedId,
                        onDeleted: { self.selectedId = nil },
                        onOpenAI: { withAnimation(.easeOut(duration: 0.2)) { showAI = true } })
@@ -456,9 +478,12 @@ struct MainView: View {
             var s = Fmt.full.string(from: now) + " · " + Almanac.day(now).lunarText
             if let m = Holiday.mark(now) { s += " · " + m.label }
             return s
-        case .all: return "共 \(store.entries.count) 篇 · \(store.totalWords()) 字"
+        case .all:
+            // 有锁着的本子时把这件事说明白，不然「怎么少了几篇」会让人心里没底
+            let head = "共 \(store.visible.count) 篇 · \(store.totalWords()) 字"
+            return store.hasClosedJournals ? head + " · 有日记本未解锁" : head
         case .onThisDay: return "往年同一天写下的"
-        case .tag(let t): return "共 \(store.entries.filter { $0.tags.contains(t) }.count) 篇"
+        case .tag(let t): return "共 \(store.visible.filter { $0.tags.contains(t) }.count) 篇"
         default: return "共 \(listEntries.count) 篇"
         }
     }
@@ -468,15 +493,15 @@ struct MainView: View {
         case .today:
             return store.entries(on: Date())
         case .all:
-            return store.entries
+            return store.visible
         case .onThisDay:
             return store.onThisDayEntries
         case .journal(let id):
-            return store.entries.filter { $0.journalId == id }
+            return store.visible.filter { $0.journalId == id }
         case .tag(let t):
-            return store.entries.filter { $0.tags.contains(t) }
+            return store.visible.filter { $0.tags.contains(t) }
         default:
-            return store.entries
+            return store.visible
         }
     }
 
@@ -517,7 +542,9 @@ struct MainView: View {
 
     private func newEntry() {
         var journalId: String? = nil
-        if case .journal(let id) = scope ?? .today { journalId = id }
+        // 正停在某一本上就写进那一本；但它要是锁着的（刚被重新锁上之类）
+        // 就退回默认本子，别把新日记塞进一个当场看不见的地方。
+        if case .journal(let id) = scope ?? .today, !store.isJournalLocked(id) { journalId = id }
         let entry = store.createEntry(journalId: journalId)
         selectedId = entry.id
         if case .journal = scope ?? .today {} else if case .today = scope ?? .today {} else {

@@ -233,7 +233,7 @@ struct StatsView: View {
     /// 每天写了多少字（键是 yyyy-MM-dd）
     private var heatCounts: [String: Int] {
         var m: [String: Int] = [:]
-        for e in store.entries { m[e.dayKey, default: 0] += e.wordCount }
+        for e in store.visible { m[e.dayKey, default: 0] += e.wordCount }
         return m
     }
 
@@ -243,7 +243,7 @@ struct StatsView: View {
                 Text("统计").font(.rj(20.5, weight: .bold, design: .rounded))
 
                 HStack(spacing: 12) {
-                    statCard("全部日记", "\(store.entries.count)", "篇", "books.vertical.fill", .blue)
+                    statCard("全部日记", "\(store.visible.count)", "篇", "books.vertical.fill", .blue)
                     statCard("累计字数", "\(store.totalWords())", "字", "character", .orange)
                     statCard("连续记录", "\(store.streak)", "天", "flame.fill", .red)
                     statCard("标签", "\(store.allTags.count)", "个", "number", .purple)
@@ -318,7 +318,7 @@ struct StatsView: View {
                                         ZStack(alignment: .leading) {
                                             Capsule().fill(Color.secondary.opacity(0.12))
                                             Capsule().fill(color.opacity(0.85))
-                                                .frame(width: max(6, geo.size.width * CGFloat(count) / CGFloat(max(store.entries.count, 1))))
+                                                .frame(width: max(6, geo.size.width * CGFloat(count) / CGFloat(max(store.visible.count, 1))))
                                         }
                                     }
                                     .frame(height: 8)
@@ -338,7 +338,7 @@ struct StatsView: View {
                 card("写作习惯") {
                     VStack(alignment: .leading, spacing: 6) {
                         infoRow("平均每篇", "\(avgWords) 字")
-                        infoRow("最长一篇", "\(store.entries.map { $0.wordCount }.max() ?? 0) 字")
+                        infoRow("最长一篇", "\(store.visible.map { $0.wordCount }.max() ?? 0) 字")
                         infoRow("最常写的时间", mostActiveHour)
                         infoRow("有记录的天数", "\(store.dayKeys.count) 天")
                     }
@@ -393,29 +393,34 @@ struct StatsView: View {
         for i in stride(from: 29, through: 0, by: -1) {
             guard let day = cal.date(byAdding: .day, value: -i, to: Date()) else { continue }
             let key = Fmt.day.string(from: day)
-            let count = store.entries.filter { $0.dayKey == key }.count
+            let count = store.visible.filter { $0.dayKey == key }.count
             let label = "\(cal.component(.day, from: day))"
             out.append((label, count))
         }
         return out
     }
 
+    /// 日记本分布：锁着没解开的那一本压根不出现在图里 ——
+    /// 连「有这么一本、里面有 N 篇」都算信息，不该在没解锁的时候露出来。
     private var journalStats: [(String, Int, Color)] {
-        store.journals.map { j in
-            (j.name, store.entries.filter { $0.journalId == j.id }.count, Color(hex: j.colorHex))
-        }.filter { $0.1 > 0 }
+        store.journals
+            .filter { !store.isJournalLocked($0.id) }
+            .map { j in
+                (j.name, store.visible.filter { $0.journalId == j.id }.count, Color(hex: j.colorHex))
+            }
+            .filter { $0.1 > 0 }
     }
 
     private var allTagStats: [(String, Int)] { Array(store.allTags.prefix(20)) }
 
     private var avgWords: Int {
-        guard !store.entries.isEmpty else { return 0 }
-        return store.totalWords() / store.entries.count
+        guard !store.visible.isEmpty else { return 0 }
+        return store.totalWords() / store.visible.count
     }
 
     private var mostActiveHour: String {
         var buckets: [Int: Int] = [:]
-        for e in store.entries {
+        for e in store.visible {
             let h = Calendar.current.component(.hour, from: e.createdAt)
             buckets[h, default: 0] += 1
         }

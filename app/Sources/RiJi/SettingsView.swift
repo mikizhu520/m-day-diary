@@ -459,7 +459,7 @@ struct SettingsView: View {
                             .foregroundStyle(Color.green)
                         VStack(alignment: .leading, spacing: 1) {
                             Text("已设置密码").font(.rj(13, weight: .medium))
-                            Text("打开日迹需要输入密码").font(.rj(11.5)).foregroundStyle(.secondary)
+                            Text("打开 \(AppInfo.name) 需要输入密码").font(.rj(11.5)).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button {
@@ -690,7 +690,7 @@ struct SettingsView: View {
             SettingsRow(label: "写今天的日记时自动记下天气") {
                 Toggle("", isOn: binding(\.weatherAuto)).labelsHidden()
             }
-            SettingsRow(label: "城市", hint: "填城市名即可，例如「北京」「某县」") {
+            SettingsRow(label: "城市", hint: "填城市名即可，例如「北京」「上海」") {
                 HStack(spacing: 10) {
                     TextField("北京", text: binding(\.weatherCity))
                         .textFieldStyle(.roundedBorder)

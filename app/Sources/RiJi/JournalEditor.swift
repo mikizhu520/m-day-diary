@@ -27,6 +27,7 @@ struct JournalEditor: View {
                 VStack(alignment: .leading, spacing: 20) {
                     previewCard
                     nameField
+                    lockSection
                     colorSection
                     symbolSection
                 }
@@ -74,7 +75,7 @@ struct JournalEditor: View {
                              size: 26)
             VStack(alignment: .leading, spacing: 1) {
                 Text(draft.title).font(.rj(16, weight: .bold, design: .rounded))
-                Text(draft.isNew ? "起个名字，挑个图标" : "改名、换色、换图标")
+                Text(draft.isNew ? "起个名字，挑个图标" : "改名、换色、换图标、管隐私")
                     .font(.rj(11.5))
                     .foregroundStyle(.secondary)
             }
@@ -147,6 +148,39 @@ struct JournalEditor: View {
                 .animation(.easeOut(duration: 0.15), value: nameFocused)
                 .onSubmit { if draft.canSave { save() } }
         }
+    }
+
+    // MARK: 隐私
+    //
+    // 上锁的前提是设过打开密码 —— 校验用的就是那一套，不另设一本子的密码。
+    // 没设的时候不能只是「存不上」：得把原因写出来，并且指向设置页的那一项。
+
+    private var lockSection: some View {
+        let hasPassword = store.security.hasPassword
+        return section("隐私") {
+            Toggle(isOn: lockBinding) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("单独上锁").font(.rj(13))
+                    Text(hasPassword
+                         ? "点开这一本时要先过指纹或打开密码；本次打开期间解开一次就够。"
+                         : "需要先在「设置 → 安全」里设置打开密码，才能给日记本上锁。")
+                        .font(.rj(11.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(!hasPassword)
+            .opacity(hasPassword ? 1 : 0.55)
+        }
+    }
+
+    /// 没设打开密码时，永远显示成「关」——否则配置文件被手改过的话，
+    /// 这个开关会呈现出一个根本生效不了的状态，看着像坏了。
+    private var lockBinding: Binding<Bool> {
+        Binding(get: { draft.locked && store.security.hasPassword },
+                set: { draft.locked = $0 })
     }
 
     // MARK: 颜色

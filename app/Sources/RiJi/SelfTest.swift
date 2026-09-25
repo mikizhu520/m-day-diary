@@ -13,7 +13,7 @@ enum SelfTest {
     private static var failed = 0
 
     static func run() {
-        print("▶︎ 日迹 自检开始\n")
+        print("▶︎ MDay 自检开始\n")
         crypto()
         roundTripPlain()
         roundTripEncrypted()
@@ -27,6 +27,7 @@ enum SelfTest {
         biometric()
         vault()
         journalAdmin()
+        journalLock()
         gridJournal()
         lifeAdvice()
         entrySort()
@@ -297,19 +298,19 @@ enum SelfTest {
         check("缺失的自动天气回落默认", old?.weatherAuto == true)
 
         // 未来版本新增字段，旧程序也不能崩
-        let future = #"{"dataPath":"/tmp/x","somethingNew":123,"weatherCity":"某新区"}"#
+        let future = #"{"dataPath":"/tmp/x","somethingNew":123,"weatherCity":"上海"}"#
         let f = try? JSONDecoder().decode(AppSettings.self, from: Data(future.utf8))
         check("未知字段不影响解码", f != nil)
-        eq("新字段能读到", f?.weatherCity ?? "", "某新区")
+        eq("新字段能读到", f?.weatherCity ?? "", "上海")
         eq("未知字段时其余照旧", f?.aiBaseURL ?? "", "https://api.deepseek.com/v1")
 
         // 往返
         var s = AppSettings(dataPath: "/tmp/rt")
-        s.weatherCity = "某淀"
+        s.weatherCity = "杭州"
         s.weatherAuto = false
         if let data = try? JSONEncoder().encode(s),
            let rt = try? JSONDecoder().decode(AppSettings.self, from: data) {
-            eq("设置往返：城市", rt.weatherCity, "某淀")
+            eq("设置往返：城市", rt.weatherCity, "杭州")
             check("设置往返：自动天气开关", rt.weatherAuto == false)
             eq("设置往返：数据目录", rt.dataPath, "/tmp/rt")
         } else {
@@ -347,7 +348,7 @@ enum SelfTest {
 
         | 姓名 | 年龄 |
         | --- | --- |
-        | 小竹 | 34 |
+        | 张三 | 28 |
 
         ![](../../../attachments/pic.png)
         """
@@ -1119,6 +1120,207 @@ enum SelfTest {
               })
     }
 
+    // MARK: 日记本单独上锁
+
+    private static func journalLock() {
+        print("\n· 日记本单独上锁")
+
+        // 1) 容错解码：旧配置没有 locked，写坏了也不能把整只日记本吃掉
+        //
+        // 这里不用 `#"..."#` 原始字符串 —— 色值里的 `"#` 正好是它的结束符，
+        // 会当场把字符串截断（踩过一次）。
+        func decode(_ json: String) -> Journal? {
+            try? JSONDecoder().decode(Journal.self, from: Data(json.utf8))
+        }
+        func journalJSON(_ extra: String = "") -> String {
+            "{\"id\":\"j\",\"name\":\"本子\",\"colorHex\":\"#E8623C\","
+                + "\"symbol\":\"sun.max.fill\"\(extra)}"
+        }
+        check("旧配置没有 locked 字段 → 默认不上锁",
+              decode(journalJSON())?.locked == false)
+        check("locked 写成了字符串 → 退回不上锁",
+              decode(journalJSON(",\"locked\":\"yes\""))?.locked == false)
+        check("locked: true 能解出来",
+              decode(journalJSON(",\"locked\":true"))?.locked == true)
+        check("locked: false 就是不上锁",
+              decode(journalJSON(",\"locked\":false"))?.locked == false)
+
+        // 2) 真正的 Store。全程在临时目录里（enterSnapshotDemo 把 dataPath 和
+        //    supportURL 都指到 tmp），下面这些 saveConfig 绝碰不到用户的真实数据。
+        let store = Store()
+        store.enterSnapshotDemo()
+
+        // enterSnapshotDemo 造的示例日记只存在内存里，磁盘是空的。
+        // 而 setPassword() 会 loadEntries() 从磁盘重读（= 清空内存），
+        // 所以先留一份参照，设完密码再塞回去。
+        let demoEntries = DemoContent.entries(journals: store.journals)
+        store.entries = demoEntries
+
+        check("初始状态：没有任何一本上锁",
+              store.journals.allSatisfy { !$0.locked })
+        check("初始状态：hasLockedJournals 为假", !store.hasLockedJournals)
+        check("初始状态：hasClosedJournals 为假", !store.hasClosedJournals)
+        check("没有锁的时候 visible 就是全部",
+              store.visible.count == store.entries.count)
+
+        guard store.journals.count > 1 else {
+            check("示例数据至少要有两本日记本", false)
+            return
+        }
+        let target = store.journals[1]
+        let hidden = store.entries.filter { $0.journalId == target.id }
+        check("示例数据里「\(target.name)」确实有内容", !hidden.isEmpty,
+              "这一本是空的，下面几条就验证不了")
+
+        // 3) 没设打开密码时不给上锁 —— 否则会出现「点了就弹密码框但根本没有密码」
+        store.security = SecurityRecord()
+        check("没设打开密码时上锁会被拒",
+              store.setJournalLocked(target.id, true) == false)
+        check("被拒之后这一本仍然是开着的",
+              store.journal(for: target.id)?.locked == false)
+
+        // 4) 设好密码，正式上锁
+        store.setPassword("hunter2")
+        store.entries = demoEntries          // setPassword 会重读磁盘，把示例数据塞回去
+        check("设完密码后 verify 能过", store.verify("hunter2"))
+        check("上锁成功", store.setJournalLocked(target.id, true))
+        check("locked 标记落到了日记本上", store.journal(for: target.id)?.locked == true)
+        check("刚上锁 → 处于未解锁状态", store.isJournalLocked(target.id))
+        check("hasLockedJournals 变真", store.hasLockedJournals)
+        check("hasClosedJournals 变真", store.hasClosedJournals)
+
+        // 5) 上锁之后，**所有读路径**都要排除这一本。
+        //    只挡住「点开日记本」而放任「全部日记」能看见的话，这锁就是个摆设。
+        let allCount = store.entries.count
+        check("visible 少了这一本的 \(hidden.count) 篇",
+              store.visible.count == allCount - hidden.count,
+              "实际 \(store.visible.count)，期望 \(allCount - hidden.count)")
+        check("visible 里不含这一本的任何一篇",
+              store.visible.allSatisfy { $0.journalId != target.id })
+        check("entries(inJournal:) 看不到",
+              store.entries(inJournal: target.id).isEmpty)
+        check("entries(on:) 看不到",
+              store.entries(on: hidden[0].createdAt)
+                  .allSatisfy { $0.journalId != target.id })
+        check("onThisDayEntries 看不到",
+              store.onThisDayEntries.allSatisfy { $0.journalId != target.id })
+        let titles = hidden.map(\.displayTitle).filter { !$0.isEmpty }
+        check("按标题搜索搜不到这一本",
+              titles.allSatisfy { q in
+                  store.search(q).allSatisfy { $0.journalId != target.id }
+              })
+        // 只在这一本里出现过的标签，从标签统计里一起消失
+        let otherTags = Set(store.visible.flatMap { $0.tags })
+        let onlyHere = Set(hidden.flatMap { $0.tags }).subtracting(otherTags)
+        check("只属于这一本的标签也从统计里消失",
+              onlyHere.allSatisfy { tag in store.allTags.allSatisfy { $0.0 != tag } })
+        check("总字数只算可见范围",
+              store.totalWords() == store.visible.reduce(0) { $0 + $1.wordCount })
+        check("dayKeys 也只按可见范围算",
+              store.dayKeys == Set(store.visible.map { $0.dayKey }))
+        check("journalCount 依然报真实篇数（编辑窗要显示「已有 N 篇」）",
+              store.journalCount(target.id) == hidden.count)
+
+        // 6) 解锁
+        check("密码不对解不开", store.unlockJournal(target.id, password: "wrong") == false)
+        check("解失败后仍然锁着", store.isJournalLocked(target.id))
+        check("密码正确能解开", store.unlockJournal(target.id, password: "hunter2"))
+        check("解开后 isJournalLocked 转假", !store.isJournalLocked(target.id))
+        check("解开后所有日记又可见了", store.visible.count == allCount)
+        check("locked 标记还在（只是本次会话放行）",
+              store.journal(for: target.id)?.locked == true)
+        check("解开后 hasClosedJournals 转假", !store.hasClosedJournals)
+
+        // 7) 立即重新上锁
+        store.relockJournal(target.id)
+        check("重新上锁后马上又看不见了", store.visible.count == allCount - hidden.count)
+        store.relockJournal(target.id)
+        check("重复重新上锁不会出问题", store.visible.count == allCount - hidden.count)
+
+        // 8) 解锁面板的开关
+        store.requestJournalUnlock(target.id)
+        check("点锁着的本子会弹解锁面板", store.journalGate?.id == target.id)
+        store.cancelJournalGate()
+        check("取消后面板收掉", store.journalGate == nil)
+        store.requestJournalUnlock("不存在的 id")
+        check("点一个不存在的本子不会弹面板", store.journalGate == nil)
+
+        // 9) 默认本子锁着时，新建日记要落到别处
+        store.settings.defaultJournalId = target.id
+        let fallback = store.defaultJournalId()
+        check("默认本子锁着时新建会换个本子", fallback != target.id)
+        check("换到的那个本子确实是开着的", !store.isJournalLocked(fallback))
+        check("换到的那个本子真实存在",
+              store.journals.contains { $0.id == fallback })
+
+        // 10) ⌘L 锁定整个 App → 日记本那一层也归零
+        _ = store.unlockJournal(target.id, password: "hunter2")
+        check("先把它解开", !store.isJournalLocked(target.id))
+        store.security.hasPassword = true
+        store.lock()
+        check("按 ⌘L 后日记本的解开状态一起归零", store.isJournalLocked(target.id))
+        check("锁屏时解锁面板也被收掉", store.journalGate == nil)
+
+        // 11) 删掉日记本 → 残留的解锁状态要清干净
+        _ = store.unlockJournal(target.id, password: "hunter2")
+        if let victim = store.journal(for: target.id) {
+            store.deleteJournal(victim)
+        }
+        check("删掉日记本后，解锁状态里也不留它的 id",
+              !store.unlockedJournals.contains(target.id))
+        check("删掉之后默认本子也换人了",
+              store.settings.defaultJournalId != target.id)
+
+        // 12) 草稿带上上锁状态
+        guard let survivor = store.journals.first else { return }
+        store.setJournalLocked(survivor.id, true)
+        check("编辑草稿会带上当前的上锁状态",
+              JournalDraft.editing(store.journals[0]).locked)
+        check("草稿的 locked 也会被 sanitized 保留",
+              JournalDraft.editing(store.journals[0]).sanitized().locked)
+        // 编辑时不碰开关 → 锁不能丢
+        store.commitJournalDraft(JournalDraft(id: survivor.id, name: "改个名",
+                                             colorHex: survivor.colorHex,
+                                             symbol: survivor.symbol, locked: true))
+        check("编辑时不动开关，锁不会丢",
+              store.journal(for: survivor.id)?.locked == true)
+        // 新建时可以直接上锁
+        store.commitJournalDraft(JournalDraft(name: "私密本", colorHex: RJ.accentDefault,
+                                              symbol: "lock.fill", locked: true))
+        check("新建时可以直接勾上锁", store.journals.last?.locked == true)
+
+        // 13) 全部锁住也不该崩
+        //
+        // 上一步删掉的那本日记仍然留在「全部日记」里（这是有意的：删日记本不删日记），
+        // 但它们的 journalId 已经不对应任何一本了 —— 无主条目不会被任何锁覆盖，
+        // 所以下面「全部上锁 = 什么都看不见」的检查要先把它们清掉。
+        store.entries = demoEntries.filter { e in
+            store.journals.contains { $0.id == e.journalId }
+        }
+        for j in store.journals { _ = store.setJournalLocked(j.id, true) }
+        check("全部上锁后 visible 为空", store.visible.isEmpty)
+        check("全部上锁后总字数为 0", store.totalWords() == 0)
+        check("全部上锁后 dayKeys 为空", store.dayKeys.isEmpty)
+        check("全部上锁后默认本子仍指向一个真实存在的本子",
+              store.journals.contains { $0.id == store.defaultJournalId() })
+        check("全部上锁时 streak 不会崩", store.streak >= 0)
+        check("全部上锁时 onThisDayEntries 不崩", store.onThisDayEntries.isEmpty)
+
+        // 14) 取消上锁
+        check("取消上锁", store.setJournalLocked(survivor.id, false))
+        check("取消后这一本恢复可见",
+              !store.isJournalLocked(survivor.id))
+        check("取消上锁会顺手把未解锁标记也清掉",
+              !store.unlockedJournals.contains(survivor.id))
+
+        // 15) 移除打开密码 → 所有日记本锁一并取消，不留死结
+        store.removePassword()
+        check("移除打开密码后没有任何一本还锁着",
+              store.journals.allSatisfy { !$0.locked })
+        check("移除打开密码后 unlockedJournals 也清空",
+              store.unlockedJournals.isEmpty)
+    }
+
     // MARK: 九宫格日记
 
     private static func gridJournal() {
@@ -1436,10 +1638,10 @@ enum SelfTest {
         var tagged = Entry()
         tagged.journalId = "j"
         tagged.body = "在路上。"
-        tagged.city = "某淀"
+        tagged.city = "杭州"
         let text = store.serialize(tagged)
-        check("front matter 里真的写了 city", text.contains("city: 某淀"))
-        eq("写盘再读回，城市还在", store.parse(text, relPath: "x.md")?.city ?? "", "某淀")
+        check("front matter 里真的写了 city", text.contains("city: 杭州"))
+        eq("写盘再读回，城市还在", store.parse(text, relPath: "x.md")?.city ?? "", "杭州")
 
         // 老日记的 front matter 里根本没有 city 这一行
         let legacy = """
