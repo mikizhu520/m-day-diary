@@ -78,19 +78,34 @@ struct WritingHeatmap: View {
     }
 
     // MARK: 上方月份
-
+    //
+    // 这一行原来是 HStack + 每个标签一个 `frame(width: cell)`（11pt）。
+    // 但「9月」两个字符在 9pt 字号下要 18pt 宽，比格子还宽 ——
+    // Text 被压窄之后就只能折行或被切掉，用户看到的就是「热力图上面的日期没展示完整」。
+    //
+    // 改成：ZStack 里按精确 x 定位（x = 星期列宽 + 列号 × 格距），
+    // 标签自己 `.fixedSize()` 保证不被压缩。这样它想写多宽就多宽，
+    // 反正相邻两个月份标签之间至少隔 4 列（56pt），不会撞在一起。
     private var monthRow: some View {
-        HStack(spacing: gap) {
-            Color.clear.frame(width: 22, height: 1)
-            ForEach(Array(monthLabels().enumerated()), id: \.offset) { _, label in
-                Text(label)
-                    .font(.rj(9))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: cell, alignment: .leading)
-                    .fixedSize()
+        let labels = monthLabels()
+        // 星期列（18）+ HStack 间距（4）
+        let inset: CGFloat = 22
+        let grid = CGFloat(weeks) * (cell + gap) - gap
+        return ZStack(alignment: .topLeading) {
+            Color.clear.frame(width: grid + inset, height: 11)
+            ForEach(Array(labels.enumerated()), id: \.offset) { idx, label in
+                if !label.isEmpty {
+                    // 最后一个标签可能贴着右边界，往里收一点，别被裁掉尾字
+                    let x = min(inset + CGFloat(idx) * (cell + gap), grid + inset - 22)
+                    Text(label)
+                        .font(.rj(9))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize()
+                        .offset(x: x)
+                }
             }
         }
-        .frame(height: 10, alignment: .leading)
+        .frame(height: 11, alignment: .topLeading)
     }
 
     /// 每列给一个月份标签，只有「这一列的周一换了月」才写出月份，其余留空 ——

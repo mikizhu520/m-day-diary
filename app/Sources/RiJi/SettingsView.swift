@@ -52,10 +52,13 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @EnvironmentObject var store: Store
+    @EnvironmentObject var ai: AIService
     @Environment(\.dismiss) private var dismiss
 
     @State private var page: SettingsPage = .general
     @State private var uiScale = UIScale.doubleValue
+    /// 记忆明细面板
+    @State private var showingMemory = false
 
     init(initialPage: SettingsPage? = nil) {
         _page = State(initialValue: initialPage ?? SnapshotState.settingsPage)
@@ -674,12 +677,130 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsSection(title: "个性化提示词", caption: "写在这里的话会随每次对话一起发给小迹，让它更懂你的处境。") {
+            SettingsSection(title: "小迹的人格",
+                            caption: "人格决定小迹怎么跟你说话。同一段日记，心灵导师会问你「你是不是其实在意的是别的」，复盘教练会直接给你三条能落地的动作。对话面板顶部的图标里也能随时切。") {
+                SettingsRow(label: "当前人格") {
+                    Picker("", selection: binding(\.aiPersona)) {
+                        ForEach(AIPersonas.all) { p in
+                            Text(p.name).tag(p.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 150)
+                }
+                SettingsRow(label: "") {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("适合：\(AIPersonas.find(store.settings.aiPersona).scene)")
+                            .font(.rj(12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("风格：\(AIPersonas.find(store.settings.aiPersona).tagline)")
+                            .font(.rj(11))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(width: 250, alignment: .leading)
+                }
+            }
+
+            SettingsSection(title: "关于你",
+                            caption: "填了这些，小迹回答时会知道在对谁说话。生日和星座会一起记进记忆文件，MBTI 用来理解你处理信息和做决定的习惯 —— 只当参考，不会拿来给人贴标签。") {
+                SettingsRow(label: "希望小迹怎么称呼你", hint: "留空就不特别称呼") {
+                    TextField("例如：小竹、小岚、老大", text: binding(\.userNickname))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 190)
+                }
+                SettingsRow(label: "出生日期", hint: "1992-06-23 或 06-23，年份可省") {
+                    HStack(spacing: 10) {
+                        TextField("可不填", text: binding(\.birthday))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 150)
+                            .onChange(of: store.settings.birthday) { _, _ in
+                                store.syncProfileFacts()
+                            }
+                        if let s = UserProfile.zodiacName(from: store.settings.birthday) {
+                            Text(s).font(.rj(12.5, weight: .semibold)).foregroundStyle(Color.rjAccent)
+                        }
+                        if let a = UserProfile.age(from: store.settings.birthday) {
+                            Text("\(a) 岁").font(.rj(12.5)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+                SettingsRow(label: "MBTI") {
+                    HStack(spacing: 8) {
+                        Picker("", selection: binding(\.mbti)) {
+                            Text("不填").tag("")
+                            ForEach(UserProfile.mbtiTypes, id: \.self) { t in Text(t).tag(t) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 110)
+                        .onChange(of: store.settings.mbti) { _, _ in
+                            store.syncProfileFacts()
+                        }
+                        if let d = mbtiDescription {
+                            Text(d).font(.rj(12)).foregroundStyle(.secondary)
+                                .frame(width: 250, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+
+            SettingsSection(title: "记忆",
+                            caption: "小迹会读你的日记，把「关于你本人」的事实（住哪儿、几点下班、忌口、在推进什么）抽出来存成一个本地文件，回答时作为背景带上。文件不上传，随时可以清空。") {
+                SettingsRow(label: "自动从日记更新") {
+                    Toggle("", isOn: binding(\.aiAutoMemory)).labelsHidden()
+                }
+                SettingsRow(label: "已积累", hint: memoryCaption) {
+                    HStack(spacing: 9) {
+                        if store.memory.isBusy {
+                            ProgressView().controlSize(.small)
+                            Text("正在读日记…").font(.rj(12.5)).foregroundStyle(.secondary)
+                        } else {
+                            Text("\(store.memory.facts.count) 条").font(.rj(12.5, weight: .semibold))
+                        }
+                        Button {
+                            Task { await store.refreshMemory(using: ai, force: true) }
+                        } label: {
+                            Label("立即更新", systemImage: "arrow.clockwise")
+                                .font(.rj(12.5, weight: .semibold))
+                        }
+                        .buttonStyle(RJSubtleButtonStyle())
+                        .disabled(store.memory.isBusy)
+                        Button("查看") { showingMemory = true }
+                            .buttonStyle(RJPlainButtonStyle())
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+                if let msg = store.memory.lastMessage, !msg.isEmpty {
+                    Text(msg)
+                        .font(.rj(12))
+                        .foregroundStyle(msg.contains("失败") ? .orange : .secondary)
+                }
+            }
+
+            SettingsSection(title: "个性化提示词",
+                            caption: "这里写的话会加在所选人格之上，随每次对话一起发给小迹。用来补人格覆盖不了的私人背景，比如你在做什么、在意什么。") {
                 TextField("例如：我是一名产品经理，请多关注决策和情绪", text: binding(\.customPrompt), axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(3...5)
             }
         }
+        .sheet(isPresented: $showingMemory) {
+            MemorySheet().environmentObject(store)
+        }
+    }
+
+    // MARK: 记忆 / 档案的辅助
+
+    private var memoryCaption: String {
+        guard let last = store.memory.lastRunAt else { return "还没更新过" }
+        return "上次更新 \(Fmt.day.string(from: last))"
+    }
+
+    private var mbtiDescription: String? {
+        let t = UserProfile.normalizeMBTI(store.settings.mbti)
+        return t.isEmpty ? nil : MBTIProfileBook.line(for: t)
     }
 
     // MARK: 天气

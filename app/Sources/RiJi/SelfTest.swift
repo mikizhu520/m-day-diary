@@ -37,6 +37,7 @@ enum SelfTest {
         holiday()
         zodiac()
         uiScale()
+        persona()
         print("\n──────────────────────")
         print("通过 \(passed) 项，失败 \(failed) 项")
         exit(failed == 0 ? 0 : 1)
@@ -296,6 +297,12 @@ enum SelfTest {
         check("旧配置保留已完成引导", old?.isConfigured == true)
         eq("缺失的城市回落默认", old?.weatherCity ?? "", "北京")
         check("缺失的自动天气回落默认", old?.weatherAuto == true)
+        eq("旧配置缺失人格时回落默认", old?.aiPersona ?? "", "companion")
+
+        // 配置里存了一个不存在的人格 id（比如以后砍掉某个人格）
+        let badPersona = #"{"dataPath":"/tmp/x","aiPersona":"已经删掉的人格"}"#
+        let bp = try? JSONDecoder().decode(AppSettings.self, from: Data(badPersona.utf8))
+        eq("非法人格 id 自愈成默认", bp?.aiPersona ?? "", "companion")
 
         // 未来版本新增字段，旧程序也不能崩
         let future = #"{"dataPath":"/tmp/x","somethingNew":123,"weatherCity":"上海"}"#
@@ -308,10 +315,12 @@ enum SelfTest {
         var s = AppSettings(dataPath: "/tmp/rt")
         s.weatherCity = "杭州"
         s.weatherAuto = false
+        s.aiPersona = "strategist"
         if let data = try? JSONEncoder().encode(s),
            let rt = try? JSONDecoder().decode(AppSettings.self, from: data) {
             eq("设置往返：城市", rt.weatherCity, "杭州")
             check("设置往返：自动天气开关", rt.weatherAuto == false)
+            eq("设置往返：人格", rt.aiPersona, "strategist")
             eq("设置往返：数据目录", rt.dataPath, "/tmp/rt")
         } else {
             check("设置可编解码往返", false)
@@ -509,6 +518,33 @@ enum SelfTest {
         LiveMarkdown.render(caret, baseSize: 16, caretLine: NSRange(location: 5, length: 0))
         let hiddenAgain = (caret.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize ?? 99
         check("即时渲染：光标离开后重新收起", hiddenAgain < 1, "实际 \(hiddenAgain)")
+
+        // MARK: 待办勾选的文本改写
+        //
+        // 方框是自绘的，AppKit 不认识它；点击切换全靠 taskToggle 算出「改哪一个字符」。
+        // 这里把纯逻辑钉住，视图层只做命中检测。
+        func toggled(_ source: String) -> String {
+            let ns = source as NSString
+            guard let t = LiveMarkdown.taskToggle(in: ns, range: NSRange(location: 0, length: ns.length)) else {
+                return source
+            }
+            return ns.replacingCharacters(in: t.range, with: t.replacement)
+        }
+        eq("待办：空框打勾", toggled("- [ ] 写周报"), "- [x] 写周报")
+        eq("待办：大写 X 也能取消", toggled("- [X] 写周报"), "- [ ] 写周报")
+        eq("待办：小写 x 取消", toggled("* [x] 写周报"), "* [ ] 写周报")
+        eq("待办：带缩进的嵌套待办", toggled("  - [ ] 子项"), "  - [x] 子项")
+        eq("待办：正文里带方括号不受影响", toggled("- [ ] 数组 [0] 取值"), "- [x] 数组 [0] 取值")
+        // 只认「行首的待办框」，正文中间随手写的方括号不能被误改
+        let plain = "- 普通列表 [ ] 不是方框"
+        check("待办：普通列表里的方括号不动",
+              LiveMarkdown.taskToggle(in: plain as NSString,
+                                      range: NSRange(location: 0, length: (plain as NSString).length)) == nil)
+        check("待办：空范围返回 nil",
+              LiveMarkdown.taskToggle(in: "- [ ] x" as NSString, range: NSRange(location: 0, length: 0)) == nil)
+        // 越界范围不能崩
+        check("待办：越界范围返回 nil",
+              LiveMarkdown.taskToggle(in: "- [ ] x" as NSString, range: NSRange(location: 0, length: 99)) == nil)
 
         // MARK: 排版规格（MDType 里的数值，参考 GitHub markdown-css / Tailwind Typography）
         let tc = MDType(base: 16)
@@ -1536,6 +1572,24 @@ enum SelfTest {
                   LifeAdvice.today(date: sameDayNextYear) != base)
         }
 
+        // 卡片显示的字数上限：
+        // 原来靠 `.lineLimit(4)`，侧边栏一行十六七个字，四行约 65 字；
+        // 用户要求「限定字数再多 50 个」，所以上限至少要比 65 多 50。
+        check("今日一句字数上限比原行数限制多出 50 字以上",
+              LifeAdvice.cardCharLimit >= 115, "实际 \(LifeAdvice.cardCharLimit)")
+        let short = "简单一句话。"
+        eq("短句原样显示", LifeAdvice.cardText(short), short)
+        let long = String(repeating: "字", count: 300)
+        let clipped = LifeAdvice.cardText(long)
+        check("超长按字数截断并加省略号",
+              clipped.count == LifeAdvice.cardCharLimit + 1 && clipped.hasSuffix("…"),
+              "实际 \(clipped.count) 字")
+        check("恰好等于上限时不截断",
+              LifeAdvice.cardText(String(repeating: "字", count: LifeAdvice.cardCharLimit)).hasSuffix("字"))
+        // 每条建议都得能过一遍截断，不能有崩的
+        check("所有条目都能安全截断",
+              all.allSatisfy { !LifeAdvice.cardText($0).isEmpty })
+
         // 一年里每天都得取得到，不能有空指针式崩溃
         var allDaysOK = true
         let start = cal.startOfDay(for: today)
@@ -1544,6 +1598,54 @@ enum SelfTest {
             if LifeAdvice.today(date: d).isEmpty { allDaysOK = false; break }
         }
         check("往后一年 366 天每天都取得到", allDaysOK)
+
+        // MARK: 《100 个基本》—— 第二个金句来源
+        let basic = Basic100.all
+        check("《100 个基本》抽满 100 条（\(basic.count) 条）", basic.count == 100)
+        check("《100 个基本》没有空条目", basic.allSatisfy { !$0.trimmed.isEmpty })
+        check("《100 个基本》没有重复条目", Set(basic).count == basic.count)
+        // 这本的每条都是收住的一句话（没有引语），但第 34 条是疑问句「…幸福吗？」
+        check("《100 个基本》每条都是完整句子",
+              basic.allSatisfy { $0.trimmed.hasSuffix("。") || $0.trimmed.hasSuffix("？") },
+              "例：" + (basic.first { !($0.trimmed.hasSuffix("。") || $0.trimmed.hasSuffix("？")) } ?? "无"))
+        // 每条只取了「基本」短句本身，后面几百字的解说不要 —— 卡片放不下
+        check("《100 个基本》每条都不长（最长 \(basic.map(\.count).max() ?? 0) 字）",
+              basic.allSatisfy { $0.count <= 40 })
+        check("《100 个基本》与凯文·凯利那本没有撞条目",
+              Set(basic).isDisjoint(with: Set(all)))
+
+        // 轮换：一年里两本书都得露面，否则新加的那本等于白加
+        var seenKK = false, seenBasic = false
+        for i in 0..<366 {
+            guard let d = cal.date(byAdding: .day, value: i, to: start) else { continue }
+            let q = LifeAdvice.quote(date: d)
+            if q.source == LifeAdvice.source { seenKK = true }
+            if q.source == Basic100.source { seenBasic = true }
+        }
+        check("一年里两本书都会出现", seenKK && seenBasic, "凯文·凯利=\(seenKK) 松浦=\(seenBasic)")
+
+        // 出处不能张冠李戴：句子必须真的属于标出来的那本书
+        var mismatch = false
+        for i in 0..<200 {
+            guard let d = cal.date(byAdding: .day, value: i, to: start) else { continue }
+            let q = LifeAdvice.quote(date: d)
+            let ok = (q.source == Basic100.source && basic.contains(q.text))
+                  || (q.source == LifeAdvice.source && all.contains(q.text))
+            if !ok { mismatch = true; break }
+        }
+        check("出处和句子对得上（没有标错书）", !mismatch)
+
+        // 「换一句」要在两本书之间跳，且不越界
+        var offsetsOK = true
+        for k in -40...40 {
+            let q = LifeAdvice.quote(offset: k, date: today)
+            if q.text.isEmpty || q.source.isEmpty { offsetsOK = false; break }
+        }
+        check("换一句（前后 40 次）都不越界", offsetsOK)
+
+        let q0 = LifeAdvice.quote(offset: 0, date: today)
+        let q1 = LifeAdvice.quote(offset: 1, date: today)
+        check("换一句会换到另一本书", q0.source != q1.source, "\(q0.source) → \(q1.source)")
     }
 
     // MARK: 列表排序
@@ -1938,5 +2040,69 @@ enum SelfTest {
         }
         let restored = old > 0 ? CGFloat(old) : UIScale.defaultFactor
         check("测试后已还原原设置", abs(UIScale.factor - restored) < 0.001)
+    }
+
+    // MARK: 小迹的人格预设
+
+    private static func persona() {
+        print("\n· 小迹的人格预设")
+        let all = AIPersonas.all
+        check("人格数量 ≥ 6", all.count >= 6, "实际 \(all.count)")
+        check("id 不重复", Set(all.map(\.id)).count == all.count)
+        check("名字不重复", Set(all.map(\.name)).count == all.count)
+
+        // 每个人格都要有实际内容，不能是空壳 ——
+        // 空提示词会让模型退回默认语气，人格就白切了
+        for p in all {
+            check("「\(p.name)」有提示词", p.system.count > 120, "实际 \(p.system.count) 字")
+            check("「\(p.name)」有图标与说明", !p.symbol.isEmpty && !p.tagline.isEmpty)
+        }
+
+        check("默认人格是知心陪伴", AIPersonas.companion.id == "companion")
+        check("按 id 能找到对应人格", AIPersonas.find("mentor").name == "心灵导师")
+        check("未知 id 退回默认人格", AIPersonas.find("不存在的id").id == AIPersonas.companion.id)
+
+        // 配置里的 id 认不出来时要能自愈，否则整份设置的解码会连坐
+        eq("非法人格 id 被拉回默认", AIPersonas.resolve("??? "), "companion")
+        eq("合法人格 id 原样保留", AIPersonas.resolve("coach"), "coach")
+
+        // 拼系统提示词时，人设和通用底线都得在
+        let sys = AIPrompts.system(for: "mentor")
+        check("系统提示词带上人设", sys.contains("心灵导师"))
+        check("系统提示词补了不编造的要求", sys.contains("不要补"))
+        check("未知人格也能拼出系统提示词", AIPrompts.system(for: "nope").count > 120)
+
+        // 四个快捷动作的提示词
+        let e = Entry(createdAt: Date(), body: "今天开会到十点，累。")
+        let day = AIPrompts.summarizeDay([e], date: Date())
+        check("当日总结给了输出结构", day.contains("### 今天发生了什么"))
+        check("当日总结限了字数", day.contains("350 字"))
+        check("当日总结带上了正文", day.contains("今天开会到十点"))
+
+        let range = AIPrompts.summarizeRange([e], label: "最近 7 天")
+        check("阶段总结写了分析口径", range.contains("看重复，不看单篇"))
+        check("阶段总结限了字数", range.contains("500 字"))
+
+        let mood = AIPrompts.moodInsight([e], label: "最近的日记")
+        check("情绪洞察是独立提示词", mood.contains("只分析情绪"))
+        // 情绪类的提示词必须写清能力边界，否则模型很容易滑向「诊断」
+        check("情绪洞察声明不做诊断", mood.contains("不是心理诊断"))
+        check("情绪洞察给了转介要求", mood.contains("寻求专业帮助") && mood.contains("超出了你的能力范围"))
+        check("情绪洞察带上了心情字段", mood.contains("心情："))
+
+        let single = AIPrompts.summarizeSingle(e, journal: "日常")
+        check("单篇总结保留原文引用要求", single.contains("原样摘录"))
+
+        // AI 回答用的字色要比正文「浅一档」。
+        // 浅色模式下浅 = 明度数值更大，深色模式下浅 = 明度数值更小（本来底就暗），
+        // 两种情况都要满足，所以分开断言。
+        check("浅色模式：AI 字色比正文浅",
+              InkLevel.bodySoftLight > InkLevel.bodyLight,
+              "正文 \(InkLevel.bodyLight) → AI \(InkLevel.bodySoftLight)")
+        check("深色模式：AI 字色比正文浅",
+              InkLevel.bodySoftDark < InkLevel.bodyDark,
+              "正文 \(InkLevel.bodyDark) → AI \(InkLevel.bodySoftDark)")
+        check("两档字色确实不同", MDInk.current.body != MDInk.current.bodySoft)
+        check("浅一档但没淡到看不清", InkLevel.bodySoftLight < 0.5)
     }
 }

@@ -486,6 +486,17 @@ final class RJTextView: NSTextView {
     }
 
     // MARK: 各类装饰
+
+    /// 待办勾选框的位置：贴在文字左边缘的左边。
+    /// 绘制（paint）和点击命中共用同一条公式 —— 两处各算一遍迟早会错位，
+    /// 表现出来就是「看着能点，点下去没反应」。
+    private static func checkboxRect(textX: CGFloat, lineRect: NSRect, type t: MDType) -> NSRect {
+        let s = t.checkBox
+        return NSRect(x: textX - t.base * 0.58 - s,
+                      y: lineRect.midY - s / 2,
+                      width: s, height: s)
+    }
+
     private func paint(_ kind: MDDeco.Kind, rect: NSRect, textX: CGFloat,
                        type t: MDType, ink: MDInk, rightEdge: CGFloat) {
         if Self.trace { print("🎨 \(kind) rect=\(rect) textX=\(textX) right=\(rightEdge)") }
@@ -518,9 +529,7 @@ final class RJTextView: NSTextView {
 
         case .checkbox(let done):
             let s = t.checkBox
-            let box = NSRect(x: textX - t.base * 0.58 - s,
-                             y: rect.midY - s / 2,
-                             width: s, height: s)
+            let box = Self.checkboxRect(textX: textX, lineRect: rect, type: t)
             let corner = s * 0.32
             let path = NSBezierPath(roundedRect: box, xRadius: corner, yRadius: corner)
             if done {
@@ -614,6 +623,89 @@ final class RJTextView: NSTextView {
                 ink.tableLine.setFill()
                 line.fill()
             }
+        }
+    }
+
+    // MARK: 待办勾选框的点击
+    //
+    // 勾选框是绘制层画上去的，AppKit 完全不知道它的存在，所以鼠标事件默认只会把光标
+    // 摆到那一行，方框看着能点、点下去毫无反应。这里自己补一段命中检测：
+    // 点在方框上就改写源码里的 `[ ]` / `[x]`（正文存储始终是纯 Markdown，
+    // 改完照常走 textDidChange → 重排，不存在「视图和内容不一致」的问题）。
+
+    /// 事件位置落在哪个字符上（取最近的字形，点在行尾空白也算这一行）
+    private func characterIndex(at point: NSPoint) -> Int? {
+        guard let lm = layoutManager, let tc = textContainer,
+              let ts = textStorage, ts.length > 0 else { return nil }
+        let inContainer = NSPoint(x: point.x - textContainerOrigin.x,
+                                  y: point.y - textContainerOrigin.y)
+        var fraction: CGFloat = 0
+        let glyph = lm.glyphIndex(for: inContainer, in: tc,
+                                  fractionOfDistanceThroughGlyph: &fraction)
+        guard glyph < lm.numberOfGlyphs else { return nil }
+        return min(lm.characterIndexForGlyph(at: glyph), ts.length - 1)
+    }
+
+    /// 某个字符所在的待办勾选框（不是待办行则返回 nil）
+    private func checkboxBox(at charIndex: Int) -> NSRect? {
+        guard let lm = layoutManager, let tc = textContainer, let ts = textStorage,
+              charIndex >= 0, charIndex < ts.length else { return nil }
+        var effective = NSRange()
+        guard let deco = ts.attribute(.mdDeco, at: charIndex, effectiveRange: &effective) as? MDDeco,
+              case .checkbox = deco.kind else { return nil }
+
+        let glyph = lm.glyphIndexForCharacter(at: charIndex)
+        let fragment = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let rect = fragment.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+        let indent = (ts.attribute(.paragraphStyle, at: charIndex, effectiveRange: nil)
+                        as? NSParagraphStyle)?.headIndent ?? 0
+        let textX = rect.minX + tc.lineFragmentPadding + indent
+        return Self.checkboxRect(textX: textX, lineRect: rect,
+                                 type: MDType(base: deco.base, style: mdStyle))
+    }
+
+    /// 点一点宽出来的「好点区域」—— 方框本身才 15pt 见方，不加余量要瞄得很准
+    private func hitRect(_ box: NSRect) -> NSRect {
+        box.insetBy(dx: -6, dy: -6)
+    }
+
+    private func checkboxBox(at event: NSEvent) -> NSRect? {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let index = characterIndex(at: point), let box = checkboxBox(at: index) else { return nil }
+        return hitRect(box).contains(point) ? box : nil
+    }
+
+    /// 把 `[ ]` 换成 `[x]`（或反过来）。走 shouldChangeText / didChangeText，
+    /// 这样 ⌘Z 能撤销、SwiftUI 那边的 text 也会跟着更新。
+    private func toggleCheckbox(at charIndex: Int) -> Bool {
+        guard let ts = textStorage else { return false }
+        var effective = NSRange()
+        guard let deco = ts.attribute(.mdDeco, at: charIndex, effectiveRange: &effective) as? MDDeco,
+              case .checkbox = deco.kind else { return false }
+
+        let ns = ts.string as NSString
+        guard let toggle = LiveMarkdown.taskToggle(in: ns, range: effective) else { return false }
+        guard shouldChangeText(in: toggle.range, replacementString: toggle.replacement) else { return false }
+        ts.replaceCharacters(in: toggle.range, with: toggle.replacement)
+        didChangeText()
+        return true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let index = characterIndex(at: convert(event.locationInWindow, from: nil)),
+           checkboxBox(at: event) != nil {
+            window?.makeFirstResponder(self)
+            if toggleCheckbox(at: index) { return }
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// 悬停在勾选框上换成小手，让人知道这块能点
+    override func cursorUpdate(with event: NSEvent) {
+        if checkboxBox(at: event) != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            super.cursorUpdate(with: event)
         }
     }
 }

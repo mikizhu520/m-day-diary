@@ -50,8 +50,12 @@ enum SnapshotRunner {
                     size = NSSize(width: parts[0], height: parts[1])
                 }
             }
-            w.setContentSize(size)
-            w.center()
+            // RJ_NORESIZE=1：不改窗口尺寸，用它来判断某个布局错位到底是不是
+            // 「AppKit 的 setContentSize 和 SwiftUI 的布局打架」造成的。
+            if ProcessInfo.processInfo.environment["RJ_NORESIZE"] == nil {
+                w.setContentSize(size)
+                w.center()
+            }
             w.makeKeyAndOrderFront(nil)
             let actual = w.contentView?.bounds.size ?? .zero
             print("▶︎ 屏幕可用区域 \(Int(visible.width))×\(Int(visible.height))，请求 \(Int(size.width))×\(Int(size.height))"
@@ -94,12 +98,7 @@ enum SnapshotRunner {
             await settle(1.0)
             capture(store: store, "01d-live-tail")
 
-            // 纯预览模式：同一篇文档，预览和即时渲染共用一份排版规格，观感应该一致
-            NotificationCenter.default.post(name: .rjEditorMode, object: EditorMode.preview)
-            await settle(1.3)
-            capture(store: store, "01e-preview")
-            NotificationCenter.default.post(name: .rjEditorMode, object: EditorMode.live)
-            await settle(0.8)
+            // 纯预览模式已经去掉了（即时渲染本身就是所见即所得），所以这里不再拍 01e-preview
 
             // 写作区样式的对照：同一篇文档换成「杂志」预设 + 收窄版心，
             // 用来证明设置页里调的那几项真的落到了编辑器上。拍完还原。
@@ -261,6 +260,7 @@ enum SnapshotRunner {
     // MARK: 逐张抓图
 
     private static func capture(store: Store, _ name: String, sheet: Bool = false) {
+        if let only, !only.contains(name) { return }
         // 窗口不是 key / 不在前台时，系统会把整块内容画得发灰，
         // 所以出图前先把它激活，再强制重画一遍。
         NSApp.activate(ignoringOtherApps: true)
@@ -403,8 +403,19 @@ enum SnapshotRunner {
             }
     }
 
+    /// RJ_ONLY=01-main,04-calendar —— 只拍这几张。
+    /// 调「顶部留白、间距、对齐」这类局部问题时，25 张全跑一遍要一分半，
+    /// 只拍两三张两三秒就好；此时每一步的等待也压到最短。
+    private static var only: [String]? {
+        guard let s = ProcessInfo.processInfo.environment["RJ_ONLY"], !s.isEmpty else { return nil }
+        let names = s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        return names.isEmpty ? nil : names
+    }
+
     private static func settle(_ seconds: Double) async {
-        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        // 首轮等待不能压太狠，窗口尺寸改完得留时间让 SwiftUI 排完版
+        let t = only == nil ? seconds : (seconds >= 1.5 ? 1.2 : 0.22)
+        try? await Task.sleep(nanoseconds: UInt64(t * 1_000_000_000))
         // 让 SwiftUI 有机会把动画走完
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
     }

@@ -23,7 +23,7 @@ struct MDLiveTheme {
         return [
             .font: NSFont.systemFont(ofSize: baseSize, weight: .regular),
             .foregroundColor: ink.body,
-            .paragraphStyle: paragraph(line: t.bodyLine, size: baseSize, after: t.paraAfter * baseSize),
+            .paragraphStyle: paragraph(line: t.bodyLine, size: baseSize, after: t.paraAfter),
             .ligature: 0
         ]
     }
@@ -269,6 +269,34 @@ enum LiveMarkdown {
         return out
     }
 
+    // MARK: 待办勾选
+
+    /// 只认**行首**的待办框（`- [ ] ` / `* [x] ` / 缩进的同理），
+    /// 免得正文里随手写的 `[ ]` 被当成勾选框改掉。
+    private static let taskBoxRegex = try? NSRegularExpression(
+        pattern: "(?m)^[\\t ]*[-*+][\\t ]+\\[([ xX])\\]")
+
+    /// 点击待办方框时要改写的字符。
+    ///
+    /// 逻辑单独拎出来是为了能进自检 —— 视图层（RJTextView）只负责命中检测，
+    /// 剩下的「到底改哪一个字符」是个纯函数。
+    /// - Returns: `(要替换的范围, 替换成的字符)`；`nil` 表示这一段里没有方框。
+    static func taskToggle(in text: NSString,
+                           range: NSRange) -> (range: NSRange, replacement: String)? {
+        guard range.length > 0,
+              range.location >= 0,
+              range.location + range.length <= text.length,
+              let re = taskBoxRegex,
+              let m = re.firstMatch(in: text as String, range: range),
+              m.numberOfRanges > 1 else { return nil }
+
+        let inner = m.range(at: 1)
+        guard inner.location != NSNotFound, inner.length == 1 else { return nil }
+        // 空 → 打勾；打勾（大小写都算）→ 清空
+        let replacement = text.substring(with: inner) == " " ? "x" : " "
+        return (inner, replacement)
+    }
+
     // MARK: 应用属性
 
     /// - Parameter style: 设置页里选的写作区样式。不传时用默认规格
@@ -370,9 +398,19 @@ enum LiveMarkdown {
 
         switch l.block {
         case .paragraph:
+            // 空行单独处理。
+            //
+            // 默认写法会给空行一整个行高（1.72em）再加段后间距，于是一个空行吃掉
+            // 2.36em —— 屏幕上两段之间空出一大块，正是「空行太大」的来源。
+            // 这里压到 0.95 行高、段后归零：空行照样点得到、光标照样看得见，
+            // 但两段之间的实际距离回落到「上一段的段后间距 + 不到一行」。
+            if l.line.length == 0 {
+                setParagraph(theme.paragraph(line: t.bodyLine * 0.55, size: base), l.full)
+                return
+            }
             // 段落是最常见的一类，行内的 **粗体**、`代码`、链接全靠这一步
             setParagraph(theme.paragraph(line: t.bodyLine, size: base,
-                                         after: t.paraAfter * base), l.full)
+                                         after: t.paraAfter), l.full)
             inlineApply(l, to: storage, theme: theme, active: active, size: base, weight: .regular)
 
         case .heading(let level):
@@ -383,8 +421,8 @@ enum LiveMarkdown {
                                   range: l.line)
             setParagraph(theme.paragraph(line: t.headingLine(level), size: size,
                                          // 上留白大于下留白，标题才「贴着」它带的那段内容
-                                         before: first ? t.headingBefore(level) * base : 0,
-                                         after: t.headingAfter(level) * base),
+                                         before: first ? t.headingBefore(level) : 0,
+                                         after: t.headingAfter(level)),
                          l.full)
             // GitHub 的招牌做法：一二三级标题压一条底边线，章节感立刻出来
             // （设置里可以关掉，有人嫌标题下面那条线太抢）
@@ -394,8 +432,8 @@ enum LiveMarkdown {
 
         case .quote:
             setParagraph(theme.paragraph(line: t.bodyLine, size: base,
-                                         before: first ? t.quoteBlockBefore * base : 0,
-                                         after: (last ? t.quoteBlockAfter : t.quoteLineAfter) * base,
+                                         before: first ? t.quoteBlockBefore : 0,
+                                         after: last ? t.quoteBlockAfter : t.quoteLineAfter,
                                          indent: t.quoteIndent),
                          l.full)
             storage.addAttribute(.foregroundColor, value: ink.secondary, range: l.line)
@@ -405,8 +443,8 @@ enum LiveMarkdown {
 
         case .bullet:
             setParagraph(theme.paragraph(line: t.tightLine, size: base,
-                                         before: first ? t.listBlockBefore * base : 0,
-                                         after: (last ? t.listBlockAfter : t.listItemAfter) * base,
+                                         before: first ? t.listBlockBefore : 0,
+                                         after: last ? t.listBlockAfter : t.listItemAfter,
                                          indent: nesting(t.listIndent)),
                          l.full)
             // 圆点交给绘制层画，比打一个「-」出来精致得多
@@ -416,8 +454,8 @@ enum LiveMarkdown {
 
         case .numbered:
             setParagraph(theme.paragraph(line: t.tightLine, size: base,
-                                         before: first ? t.listBlockBefore * base : 0,
-                                         after: (last ? t.listBlockAfter : t.listItemAfter) * base,
+                                         before: first ? t.listBlockBefore : 0,
+                                         after: last ? t.listBlockAfter : t.listItemAfter,
                                          indent: nesting(t.listIndent)),
                          l.full)
             decorate(l.marker, ink.secondary, weight: .medium, scale: 0.96)
@@ -425,8 +463,8 @@ enum LiveMarkdown {
 
         case .task(let done):
             setParagraph(theme.paragraph(line: t.tightLine, size: base,
-                                         before: first ? t.listBlockBefore * base : 0,
-                                         after: (last ? t.listBlockAfter : t.listItemAfter) * base,
+                                         before: first ? t.listBlockBefore : 0,
+                                         after: last ? t.listBlockAfter : t.listItemAfter,
                                          indent: nesting(t.listIndent)),
                          l.full)
             deco(.checkbox(done: done), l.full)
@@ -451,8 +489,8 @@ enum LiveMarkdown {
                                   range: l.line)
             // 底色和圆角由绘制层画，这里只把文字让出内边距
             setParagraph(theme.paragraph(line: t.codeLine, size: t.codeSize,
-                                         before: first ? t.codeBlockBefore * base : 0,
-                                         after: last ? t.codeBlockAfter * base : 0,
+                                         before: first ? t.codeBlockBefore : 0,
+                                         after: last ? t.codeBlockAfter : 0,
                                          indent: t.codePadH),
                          l.full)
             deco(.code, l.full, group: group)
@@ -461,8 +499,8 @@ enum LiveMarkdown {
             // 隐藏 --- 本身，留出一条矮行给绘制层画居中的横线
             conceal(l.line)
             setParagraph(theme.paragraph(line: 0.30, size: base,
-                                         before: t.dividerBefore * base,
-                                         after: t.dividerAfter * base,
+                                         before: t.dividerBefore,
+                                         after: t.dividerAfter,
                                          align: .center),
                          l.full)
             deco(.divider, l.full)

@@ -2,16 +2,18 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+// 编辑区只有两种看法：即时渲染 / 纯源码。
+//
+// 原来还有第三种「纯预览」—— 内容是同一份，只是把即时渲染再画一遍。
+// 用户要求去掉：即时渲染本身就已经是所见即所得，多一个按钮只是让人多犹豫一次。
 enum EditorMode: String, CaseIterable {
     case live = "即时"
     case source = "源码"
-    case preview = "预览"
 
     var symbol: String {
         switch self {
         case .live: return "square.and.pencil"
         case .source: return "chevron.left.forwardslash.chevron.right"
-        case .preview: return "eye"
         }
     }
 }
@@ -67,10 +69,13 @@ struct EditorView: View {
 
     private func content(_ entry: Entry) -> some View {
         VStack(spacing: 0) {
+            // 编辑区在窗口右侧，红绿灯压不到 —— 顶栏直接从窗口顶部开始，
+            // 不留标题栏让位（2026-09-25 用户要求「内容也往上提」）。
             topBar(entry)
             HairLine()
-            titleArea(entry)
-            tagArea(entry)
+            // 这里原来还有一行「大标题」输入框和一行「标签」胶囊。
+            // 用户要求去掉：标题本来就是正文第一行，标签改成在正文里直接写 # ——
+            // 一页纸上只有一处能写字，就不会出现「标题写什么、正文第一行又写什么」的犹豫。
             toolbarRow(entry)
             HairLine()
             bodyArea(entry)
@@ -97,6 +102,14 @@ struct EditorView: View {
             return true
         }
         .sheet(isPresented: $showPromptSheet) { aiResultSheet(entry) }
+        // 「插入模板」原来挂在标签行上，标签行去掉之后挪到这里 ——
+        // 它本来就跟标签没关系，只是当年顺手挂那儿了
+        .confirmationDialog("插入模板", isPresented: $showTemplates, titleVisibility: .visible) {
+            ForEach(EntryTemplate.all) { t in
+                Button(t.name) { insertTemplate(t, entry: entry) }
+            }
+            Button("取消", role: .cancel) {}
+        }
         .onReceive(NotificationCenter.default.publisher(for: .rjEditorMode)) { note in
             if let m = note.object as? EditorMode {
                 withAnimation(.easeOut(duration: 0.18)) { mode = m }
@@ -110,22 +123,28 @@ struct EditorView: View {
         // 顶栏的元信息（日期/时间/日记本/天气）加起来比编辑区最窄时还宽，
         // 硬撑会把「今天 22:41」这类文字挤成空药丸。所以按可用宽度逐级摘掉
         // 次要信息：先摘时间，再摘日记本名，最后只留天气，右侧操作按钮始终保留。
+        // 用户要求「心情、天气、时间放在同一行」—— 原来心情挂在右边那组按钮里，
+        // 和左边的天气隔了大半屏，看「今天什么天、当时什么心情」得左右横跳。
+        // 现在它紧挨着天气，窄下来时也和天气一起被摘掉，不会剩个孤零零的表情在天上。
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 7) {
                 dateLabel(entry)
                 timeLabel(entry)
                 journalChip(entry)
+                moodMenu(entry)
                 weatherChip(entry)
                 Spacer(minLength: 8)
                 topBarActions(entry)
             }
             HStack(spacing: 7) {
                 dateLabel(entry)
+                moodMenu(entry)
                 weatherChip(entry)
                 Spacer(minLength: 8)
                 topBarActions(entry)
             }
             HStack(spacing: 7) {
+                moodMenu(entry)
                 weatherChip(entry)
                 Spacer(minLength: 8)
                 topBarActions(entry)
@@ -135,7 +154,7 @@ struct EditorView: View {
                 topBarActions(entry)
             }
         }
-        .padding(.horizontal, 15)
+        .padding(.horizontal, 24)
         .padding(.vertical, 9)
         .background(Color.rjBar)
     }
@@ -189,19 +208,13 @@ struct EditorView: View {
         }
     }
 
-    /// 顶栏右侧：移动 / 心情 / 更多
+    /// 顶栏右侧：心情 / 更多 / 召唤小迹
+    ///
+    /// 原来最左边还有一个「移动到其他日记本」的文件夹按钮 —— 它和左边那枚日记本胶囊
+    /// 是同一件事（点胶囊就能换本），两个入口并排摆着只会让人犹豫，撤掉。
+    /// 位置让给「召唤小迹」：这是这一栏里唯一的高频动作，值得占一个显眼的位子。
     @ViewBuilder
     private func topBarActions(_ entry: Entry) -> some View {
-        MenuIcon(symbol: "folder", help: "移动到其他日记本", iconSize: 13) {
-            ForEach(store.journals) { j in
-                Button {
-                    store.move(entry, to: j.id)
-                } label: {
-                    Label(j.name, systemImage: j.symbol)
-                }
-            }
-        }
-
         moodMenu(entry)
 
         MenuIcon(symbol: "ellipsis", help: "更多", iconSize: 13) {
@@ -219,6 +232,38 @@ struct EditorView: View {
                 onDeleted()
             }
         }
+
+        aiOrb
+    }
+
+    /// 召唤小迹。
+    ///
+    /// 整个界面里的按钮基本是「浅底 + 图标」的克制风格，只有这一枚是实心渐变 ——
+    /// 它得在一排灰色小图标里被一眼看到。悬停时轻微放大，按下去有回弹。
+    private var aiOrb: some View {
+        Button {
+            onOpenAI()
+        } label: {
+            Image(systemName: "sparkles")
+                .font(.rj(13, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(LinearGradient(colors: [Color.rjAccent,
+                                                      Color.rjAccent.opacity(0.70)],
+                                             startPoint: .topLeading,
+                                             endPoint: .bottomTrailing))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+                )
+                .shadow(color: Color.rjAccent.opacity(0.30), radius: 6, y: 3)
+                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(PressableStyle(pressedScale: 0.90))
+        .help("召唤小迹 · AI 助手 (⌘J)")
     }
 
     private func moodMenu(_ entry: Entry) -> some View {
@@ -298,65 +343,6 @@ struct EditorView: View {
             return city.isEmpty ? w.summary : "\(city) · \(w.summary)"
         }
         return city.isEmpty ? "天气" : city
-    }
-
-    // MARK: 标题
-
-    private func titleArea(_ entry: Entry) -> some View {
-        TextField("标题（可留空）", text: Binding(
-            get: { store.entries.first { $0.id == entryId }?.title ?? "" },
-            set: { v in mutate { $0.title = v } }
-        ))
-        .textFieldStyle(.plain)
-        .font(.rj(22.5, weight: .bold, design: .rounded))
-        .padding(.horizontal, 22)
-        .padding(.top, 18)
-        .padding(.bottom, 3)
-    }
-
-    // MARK: 标签
-
-    private func tagArea(_ entry: Entry) -> some View {
-        HStack(spacing: 6) {
-            ForEach(entry.tags, id: \.self) { tag in
-                TagChip(text: tag) {
-                    mutate({ $0.tags.removeAll { $0 == tag } }, immediate: true)
-                }
-            }
-
-            if showTagField {
-                TextField("标签", text: $newTag)
-                    .textFieldStyle(.plain)
-                    .font(.rj(12.5))
-                    .frame(width: 90)
-                    .onSubmit {
-                        addTag(entry)
-                    }
-                    .onExitCommand { showTagField = false }
-            } else {
-                Button {
-                    showTagField = true
-                } label: {
-                    HStack(spacing: 3.5) {
-                        Image(systemName: "plus").font(.rj(9.5, weight: .bold))
-                        Text("标签").font(.rj(12))
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 9).padding(.vertical, 3.5)
-                    .background(Capsule().strokeBorder(Color.secondary.opacity(0.28)))
-                }
-                .buttonStyle(PressableStyle())
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 9)
-        .confirmationDialog("插入模板", isPresented: $showTemplates, titleVisibility: .visible) {
-            ForEach(EntryTemplate.all) { t in
-                Button(t.name) { insertTemplate(t, entry: entry) }
-            }
-            Button("取消", role: .cancel) {}
-        }
     }
 
     // MARK: 工具条
@@ -471,8 +457,7 @@ struct EditorView: View {
         }
         IconSegmented(options: [
             SegmentOption(value: .live, symbol: EditorMode.live.symbol, label: "即时渲染"),
-            SegmentOption(value: .source, symbol: EditorMode.source.symbol, label: "看源码"),
-            SegmentOption(value: .preview, symbol: EditorMode.preview.symbol, label: "纯预览")
+            SegmentOption(value: .source, symbol: EditorMode.source.symbol, label: "看源码")
         ], selection: $mode, cellWidth: 34)
     }
 
@@ -496,32 +481,22 @@ struct EditorView: View {
             ? CGFloat(style.contentWidth) * UIScale.factor
             : 100_000
 
-        // 单栏：即时渲染时输入语法当场变排版，不再分左右两半
-        return Group {
-            if mode == .preview {
-                ScrollView {
-                    MarkdownPreview(text: entry.body, store: store, entry: entry,
-                                    fontSize: store.settings.editorFontSize,
-                                    style: style)
-                        .frame(maxWidth: contentCap, alignment: .leading)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 26)
-                        .padding(.vertical, 20)
-                }
-            } else {
-                RichTextEditor(text: silentBinding,
-                               fontSize: store.settings.editorFontSize,
-                               style: style,
-                               live: mode == .live,
-                               onActivity: { store.touch() })
-                    .frame(maxWidth: contentCap)
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 18)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // 纸纹铺在最底下，编辑器和预览都透在它上面
-        .background(PaperBackground(style: PaperStyle.from(store.settings.paperStyle)))
+        // 单栏：即时渲染时输入语法当场变排版，不再分左右两半。
+        //
+        // 这里原来还有一个「纯预览」分支（把同一份内容用 MarkdownPreview 再画一遍）。
+        // 去掉了：即时渲染本身就是所见即所得，留着只是多一个按钮。
+        return RichTextEditor(text: silentBinding,
+                              fontSize: store.settings.editorFontSize,
+                              style: style,
+                              live: mode == .live,
+                              onActivity: { store.touch() })
+            .frame(maxWidth: contentCap)
+            .frame(maxWidth: .infinity)
+            // 左右 18 会被编辑器自己吃掉 6（textContainerInset 2 + lineFragmentPadding 4），
+            // 正好和上下的 24 对齐 —— 见下面「统一左边缘」那段注释
+            .padding(.horizontal, 18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(PaperBackground(style: PaperStyle.from(store.settings.paperStyle)))
     }
 
     // MARK: 状态栏
@@ -545,7 +520,7 @@ struct EditorView: View {
                 .font(.rj(11.5))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 15)
+        .padding(.horizontal, 24)
         .padding(.vertical, 7)
         .background(Color.rjBar)
     }
@@ -644,19 +619,15 @@ struct EditorView: View {
             messages.append(ChatMessage(role: "user", content: AIPrompts.suggestTags + "\n\n" + entry.plainText))
         }
 
-        Task {
-            do {
-                let text = try await ai.complete(baseURL: store.settings.aiBaseURL,
-                                                 apiKey: key,
-                                                 model: store.settings.aiModel,
-                                                 temperature: 0.7,
-                                                 messages: messages)
-                promptResult = text
-            } catch let e as AIError {
-                promptResult = "⚠️ \(e.message)"
-            } catch {
-                promptResult = "⚠️ \(error.localizedDescription)"
-            }
+        // 也走流式：原来用 `complete` 一次性拿结果，弹窗里全程只有一个转圈，
+        // 长一点的总结要干等十几秒。边生成边出字，等待感小很多。
+        ai.stream(baseURL: store.settings.aiBaseURL,
+                  apiKey: key,
+                  model: store.settings.aiModel,
+                  temperature: 0.7,
+                  messages: messages) { delta in
+            promptResult += delta
+        } onFinish: {
             promptBusy = false
         }
     }
@@ -683,7 +654,13 @@ struct EditorView: View {
             HairLine()
 
             ScrollView {
-                if promptResult.isEmpty && promptBusy {
+                if !promptResult.isEmpty {
+                    // 流式：第一个字到了就切到渲染视图，后面的继续往里长
+                    MarkdownPreview(text: promptResult, store: store, entry: entry, fontSize: 15,
+                                    style: store.settings.mdStyle, soft: true)
+                        .padding(18)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if promptBusy {
                     VStack(spacing: 10) {
                         ProgressView()
                         Text("小迹正在读你的日记…").font(.rj(13)).foregroundStyle(.secondary)
@@ -691,10 +668,20 @@ struct EditorView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 44)
                 } else {
-                    MarkdownPreview(text: promptResult, store: store, entry: entry, fontSize: 15,
-                                    style: store.settings.mdStyle)
-                        .padding(18)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // 流式的错误落在 AIService.lastError 上（不再抛回来），
+                    // 这里必须接住 —— 否则失败时弹窗是一片空白，看着像卡死了
+                    VStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.rj(20, weight: .light))
+                            .foregroundStyle(.orange)
+                        Text(ai.lastError ?? "没有收到内容，稍后再试一次")
+                            .font(.rj(12.5))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 340)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
                 }
             }
             .frame(minHeight: 280, maxHeight: 440)
@@ -709,6 +696,8 @@ struct EditorView: View {
                     Label("复制", systemImage: "doc.on.doc").font(.rj(13, weight: .medium))
                 }
                 .buttonStyle(RJPlainButtonStyle())
+                // 流式期间结果还在长，这会儿复制/存入拿到的是半截内容
+                .disabled(promptResult.isEmpty || promptBusy)
 
                 if promptTarget == "summarize" {
                     Button {
@@ -728,6 +717,7 @@ struct EditorView: View {
                             .font(.rj(13, weight: .semibold))
                     }
                     .buttonStyle(RJSubtleButtonStyle())
+                    .disabled(promptResult.isEmpty || promptBusy)
                 }
 
                 if promptTarget == "titles" {
@@ -744,6 +734,7 @@ struct EditorView: View {
                             .font(.rj(13, weight: .semibold))
                     }
                     .buttonStyle(RJSubtleButtonStyle())
+                    .disabled(promptResult.isEmpty || promptBusy)
                 }
 
                 if promptTarget == "tags" {

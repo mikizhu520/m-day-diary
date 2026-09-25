@@ -131,76 +131,11 @@ struct EntryListView: View {
         return Button {
             withAnimation(.easeOut(duration: 0.15)) { selectedId = e.id }
         } label: {
-            HStack(alignment: .top, spacing: 11) {
-                if let first = e.imageNames.first, let img = ImageCache.image(named: first, store: store, entry: e) {
-                    Image(nsImage: img)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 52, height: 52)
-                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                }
-
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 6) {
-                        if !e.mood.isEmpty { Text(e.mood).font(.rj(13.5)) }
-                        if let w = e.weather {
-                            Image(systemName: w.icon)
-                                .font(.rj(12))
-                                .foregroundStyle(w.kind.tint)
-                        }
-                        Text(e.displayTitle)
-                            .font(.rj(14, weight: .semibold))
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                    }
-                    if !e.excerpt.isEmpty {
-                        Text(e.excerpt)
-                            // 摘要比标题小一档，跟下面那行元信息也更近，
-                            // 扫列表时眼睛先落在标题上
-                            .font(.rj(11.5))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                    }
-                    HStack(spacing: 7) {
-                        Text(e.timeText)
-                            .font(.rj(11.5, design: .rounded))
-                            .foregroundStyle(.tertiary)
-                        // 写作城市
-                        if !e.city.isEmpty {
-                            HStack(spacing: 2.5) {
-                                Image(systemName: "mappin").font(.rj(9.5))
-                                Text(e.city).font(.rj(11.5))
-                            }
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                        }
-                        if let w = e.weather, let t = w.temp {
-                            Text("\(Int(t.rounded()))°").font(.rj(11.5)).foregroundStyle(.tertiary)
-                        }
-                        if let journal {
-                            HStack(spacing: 4) {
-                                JournalIconBadge(symbol: journal.symbol,
-                                                 color: Color(hex: journal.colorHex), size: 12)
-                                Text(journal.name).font(.rj(11.5)).foregroundStyle(.tertiary)
-                            }
-                        }
-                        if !e.tags.isEmpty {
-                            Text("#" + e.tags.prefix(2).joined(separator: " #"))
-                                .font(.rj(11.5)).foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                        if store.settings.showWordCount {
-                            Text("\(e.wordCount) 字")
-                                .font(.rj(11)).foregroundStyle(.quaternary)
-                        }
-                    }
-                }
-            }
-            .padding(11)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card(selected: selected, accent: accent)
+            EntryCardBody(entry: e, selected: selected)
+                .padding(11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // 选中时是淡淡一层本色底 + 本色描边，字色照常（见 CardBackground / CardInk）
+                .card(selected: selected, accent: accent)
         }
         .buttonStyle(PressableStyle(pressedScale: 0.985, pressedOpacity: 0.95))
         .contextMenu {
@@ -248,19 +183,23 @@ struct SearchResultsView: View {
 
     private func resultRow(_ e: Entry) -> some View {
         let selected = selectedId == e.id
+        let ink = CardInk(selected: selected)
         return Button {
             withAnimation(.easeOut(duration: 0.15)) { selectedId = e.id }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
-                    Text(e.displayTitle).font(.rj(14, weight: .semibold)).lineLimit(1)
+                    Text(e.displayTitle)
+                        .font(.rj(14, weight: .semibold))
+                        .foregroundStyle(ink.title)
+                        .lineLimit(1)
                     Spacer()
                     Text(Fmt.day.string(from: e.createdAt))
-                        .font(.rj(11.5, design: .rounded)).foregroundStyle(.tertiary)
+                        .font(.rj(11.5, design: .rounded)).foregroundStyle(ink.faint)
                 }
                 Text(highlighted(e))
                     .font(.rj(12.5))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ink.body)
                     .lineLimit(3)
                     .multilineTextAlignment(.leading)
             }

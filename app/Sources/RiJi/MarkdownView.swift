@@ -210,6 +210,9 @@ struct MarkdownPreview: View {
     var fontSize: Double = 15
     /// 写作区样式，跟编辑器的即时渲染读同一份，两处观感才一致
     var style: MDStyle = .default
+    /// 正文字色压浅一档。AI 回答整段整段地往外吐字，用正文那个近黑色
+    /// 会糊成一块，读者要费劲才能从里面挑出重点。
+    var soft: Bool = false
 
     var body: some View {
         let blocks = MDParser.parse(text)
@@ -222,7 +225,7 @@ struct MarkdownPreview: View {
             } else {
                 ForEach(blocks) { block in
                     MDBlockView(block: block, store: store, entry: entry,
-                                fontSize: fontSize, style: style)
+                                fontSize: fontSize, style: style, soft: soft)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -237,6 +240,7 @@ struct MDBlockView: View {
     var entry: Entry?
     var fontSize: Double
     var style: MDStyle = .default
+    var soft: Bool = false
 
     /// 预览侧的正文字号（已经乘过界面缩放），后面所有尺寸都从它按比例推，
     /// 这样跟编辑器里的即时渲染用的是同一套比例，两处观感一致。
@@ -250,6 +254,7 @@ struct MDBlockView: View {
     ///   · `t.bulletDot` / `t.checkBox` / `t.listIndent` 等**装饰尺寸**也是点数。
     private var t: MDType { MDType(base: base, style: style) }
     private var ink: MDInk { .current }
+    private var bodyInk: NSColor { soft ? ink.bodySoft : ink.body }
 
     private func c(_ color: NSColor) -> Color { Color(nsColor: color) }
 
@@ -279,7 +284,7 @@ struct MDBlockView: View {
             .padding(.top, t.headingBefore(level) * (level <= 2 ? 0.85 : 0.7))
 
         case .paragraph(let text):
-            Text(MDParser.inline(text, size: base, color: c(ink.body)))
+            Text(MDParser.inline(text, size: base, color: c(bodyInk)))
                 .lineSpacing(leading(base, t.bodyLine))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, t.paraAfter * 0.8)
@@ -324,7 +329,7 @@ struct MDBlockView: View {
                         }
                         .frame(width: t.listIndent * 0.78, alignment: .leading)
 
-                        Text(MDParser.inline(item.text, size: base, color: c(ink.body)))
+                        Text(MDParser.inline(item.text, size: base, color: c(bodyInk)))
                             .lineSpacing(leading(base, t.tightLine))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -350,7 +355,7 @@ struct MDBlockView: View {
                 .frame(width: t.checkBox, height: t.checkBox)
                 .padding(.top, base * 0.22)
 
-                Text(MDParser.inline(text, size: base, color: c(done ? ink.secondary : ink.body)))
+                Text(MDParser.inline(text, size: base, color: c(done ? ink.secondary : bodyInk)))
                     .strikethrough(done, color: c(ink.secondary))
                     .lineSpacing(leading(base, t.tightLine))
                     .padding(.leading, t.listIndent * 0.52)
@@ -371,7 +376,7 @@ struct MDBlockView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(code)
                         .font(.system(size: t.codeSize, design: .monospaced))
-                        .foregroundStyle(c(ink.body))
+                        .foregroundStyle(c(bodyInk))
                         .lineSpacing(leading(t.codeSize, t.codeLine))
                         .textSelection(.enabled)
                         .padding(.horizontal, t.codePadH)
@@ -427,7 +432,7 @@ struct MDBlockView: View {
                         ForEach(Array(row.enumerated()), id: \.offset) { cIdx, cell in
                             Text(MDParser.inline(cell, size: t.tableSize,
                                                  baseWeight: rIdx == 0 ? .semibold : .regular,
-                                                 color: c(rIdx == 0 ? ink.heading : ink.body)))
+                                                 color: c(rIdx == 0 ? ink.heading : bodyInk)))
                                 .lineSpacing(leading(t.tableSize, t.tightLine))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 // GitHub 的单元格内边距是 6px × 13px，这里按字号等比换算

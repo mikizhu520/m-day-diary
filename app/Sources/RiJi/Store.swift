@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 import CryptoKit
 import Security
 
@@ -77,6 +78,15 @@ final class Store: ObservableObject {
     private var cachedWeather: WeatherInfo?
     private var cachedWeatherDay = ""
 
+    // MARK: 记忆
+    //
+    // 从日记里沉淀下来的「关于使用者本人」的事实，让小迹的回答更贴合（见 MemoryStore.swift）。
+    // 存在 Application Support 下的 memory.json，不混进日记目录。
+    private(set) var memory: MemoryStore
+    /// 记忆变化时把 Store 的 objectWillChange 也带上 ——
+    /// @Published 只管自己这一层，子对象的变化不会自动传到界面上。
+    private var memorySink: AnyCancellable?
+
     var dataURL: URL { rootURL }
     var journalsDir: URL { rootURL.appendingPathComponent("journals", isDirectory: true) }
     var attachmentsDir: URL { rootURL.appendingPathComponent("attachments", isDirectory: true) }
@@ -90,6 +100,9 @@ final class Store: ObservableObject {
         let defaultData = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             .appendingPathComponent("日迹日记", isDirectory: true)
         rootURL = defaultData
+        // 记忆仓库必须最先建好：Swift 要求所有存储属性在「第一次用到 self」之前就位，
+        // 而下面 @Published 的赋值（settings 等）就已经算用 self 了。
+        memory = MemoryStore(fileURL: support.appendingPathComponent("memory.json"))
 
         if let data = try? Data(contentsOf: support.appendingPathComponent("config.json")),
            let cfg = try? JSONDecoder().decode(ConfigFile.self, from: data) {
@@ -104,6 +117,65 @@ final class Store: ObservableObject {
         }
         aiKeyPresent = (AIKeyStore.read()?.nilIfEmpty != nil)
         isLocked = security.hasPassword
+
+        // 记忆里的条数变了，界面上（设置页）要跟着变
+        memorySink = memory.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        // 设置里填的生日 / MBTI 也是「关于这个人」的事实，一并沉淀进记忆
+        syncProfileFacts()
+    }
+
+    // MARK: - 记忆
+
+    /// 给 AI 用的一句话档案：生日、星座（见 UserProfile）
+    func profileSummary() -> String {
+        UserProfile.summary(birthday: settings.birthday, mbti: settings.mbti)
+    }
+
+    /// 给 AI 的完整档案段：生日 / 星座 / MBTI 特质（见 MBTIProfile）
+    func personaContext() -> String {
+        memory.personaBlock(birthday: settings.birthday, mbti: settings.mbti)
+    }
+
+    /// 把设置里的档案同步进记忆。改一次同步一次，同 id 只会覆盖不会堆重复。
+    func syncProfileFacts() {
+        memory.merge(UserProfile.facts(birthday: settings.birthday, mbti: settings.mbti))
+    }
+
+    /// 从还没抽过的日记里补一批记忆。
+    ///
+    /// 只在启动/解锁后和手动点「立即更新」时跑，写完日记不会立刻触发 ——
+    /// 每敲一段就调一次模型既烧钱又卡界面，攒着一次处理反而更干净。
+    /// - Parameter force: 手动点击时忽略「自动更新」开关
+    func refreshMemory(using ai: AIService, force: Bool = false) async {
+        guard !isLocked, !entries.isEmpty else { return }
+        guard force || settings.aiAutoMemory else { return }
+        guard let key = AIKeyStore.read(), !key.trimmed.isEmpty else { return }
+        let batch = memory.pending(entries)
+        guard !batch.isEmpty else { return }
+        guard !memory.isBusy else { return }
+
+        memory.isBusy = true
+        defer {
+            memory.isBusy = false
+        }
+        do {
+            let prompt = MemoryPrompts.extract(batch)
+            let raw = try await ai.complete(baseURL: settings.aiBaseURL,
+                                            apiKey: key,
+                                            model: settings.aiModel,
+                                            temperature: 0.2,
+                                            messages: [ChatMessage(role: "user", content: prompt)])
+            let day = Fmt.day.string(from: Date())
+            let parsed = MemoryParser.parse(raw, sourceDay: day)
+            let added = memory.merge(parsed, sourceDay: day)
+            memory.lastMessage = added > 0 ? "这次新记住 \(added) 条" : "这些日记里没有新的信息"
+        } catch {
+            memory.lastMessage = "更新失败：\(error.localizedDescription)"
+        }
+        // 失败也标记：不然同一批日记会被反复重试，每次启动都撞一次墙
+        memory.markProcessed(batch)
     }
 
     // MARK: - 启动加载
@@ -115,6 +187,8 @@ final class Store: ObservableObject {
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         rootURL = tmp
         supportURL = tmp
+        // 记忆也跟着切到临时目录，别在用户真实的 memory.json 上乱写
+        memory.retarget(tmp.appendingPathComponent("memory.json"))
         journals = Journal.defaults
         settings.dataPath = tmp.path
         settings.defaultJournalId = journals.first?.id ?? ""
@@ -983,13 +1057,13 @@ final class Store: ObservableObject {
         return visible.filter { e in
             e.title.lowercased().contains(q)
                 || e.body.lowercased().contains(q)
-                || e.tags.joined(separator: " ").lowercased().contains(q)
+                || e.allTags.joined(separator: " ").lowercased().contains(q)
         }
     }
 
     var allTags: [(String, Int)] {
         var counts: [String: Int] = [:]
-        for e in visible { for t in e.tags { counts[t, default: 0] += 1 } }
+        for e in visible { for t in e.allTags { counts[t, default: 0] += 1 } }
         return counts.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
     }
 

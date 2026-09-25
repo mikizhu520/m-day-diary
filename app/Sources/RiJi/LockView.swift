@@ -2,6 +2,27 @@ import SwiftUI
 import AppKit
 
 // MARK: - 解锁界面
+//
+// 版式照用户给的参考图重做：**整块底色 + 顶部挂一个白色飘带 logo + 中间指纹 + 底部一个白色密码框**。
+// 参考图里没有卡片、没有毛玻璃、没有任何标题文字 —— 这里也一个都不加。
+//
+// 为什么换掉旧版：旧版是「灰底 + 居中毛玻璃卡片 + 圆形锁徽章」，看着像系统弹窗；
+// 整块纯色更像一扇「门」，一眼就知道这是进不去的地方。而且底色用品牌色，
+// 锁屏和图标、按钮是同一个颜色体系。
+//
+// 飘带的宽度按窗口宽的比例算，但**必须给上限**：窗口拉到 1440 时，
+// 0.23 的比例会变成 330pt 宽的一条巨幅白布，把整屏压死。
+//
+// 2026-09-25 再收一版：用户说「大小改为现在的四分之一」。
+// 「大小」按视觉面积算，所以边长缩一半（`sizeScale`）。
+// 密码框的宽度不跟着缩到底 —— 等比缩成 188pt 就窄得没法输密码了，单独给 240 的下限。
+//
+// 同一天：顶部那个白色飘带换成 **反白的应用 logo**。
+// 飘带是照参考图做的，但它和 MDay 自己没有关系（谁家书签长这样都行），
+// 换成 logo 之后锁屏一眼就认得出是哪个 App。
+
+/// 锁屏主视觉整体的缩放系数。面积 = 边长²，所以 0.5 就是「四分之一大小」。
+private let sizeScale: CGFloat = 0.5
 
 struct LockView: View {
     @EnvironmentObject var store: Store
@@ -18,181 +39,183 @@ struct LockView: View {
     private var canUseBiometric: Bool { store.biometricEnabled && store.biometricAvailable }
 
     var body: some View {
-        ZStack {
-            background
+        GeometryReader { geo in
+            let markW = min(geo.size.width * 0.15, 144) * sizeScale
+            let fieldW = max(240, min(376, max(280, geo.size.width * 0.30)) * sizeScale)
 
-            VStack(spacing: 0) {
-                VStack(spacing: 20) {
-                    lockBadge
+            ZStack {
+                background
 
-                    VStack(spacing: 6) {
-                        // 取 AppInfo 而不是写死字符串：显示名改过一次（日迹 → MDay），
-                        // 写死的地方就漏了一处，锁屏上还挂着旧名字。
-                        Text(AppInfo.name).font(.rj(28, weight: .bold, design: .rounded))
-                        Text(canUseBiometric ? "按一下\(store.biometryName)，或输入密码" : "输入密码解锁你的日记")
-                            .font(.rj(13.5))
-                            .foregroundStyle(.secondary)
-                    }
+                VStack(spacing: 0) {
+                    // 顶部留出标题栏那一条（交通灯在左上角，这儿是中间，不打架），
+                    // 再往下放 logo。
+                    LogoMark(width: markW, lineColor: Color.rjAccent)
+                        .padding(.top, 62)
+                        .scaleEffect(appeared ? 1 : 0.86)
+                        .opacity(appeared ? 1 : 0)
 
-                    VStack(spacing: 11) {
-                        passwordField
+                    Spacer(minLength: 12)
 
-                        Button(action: attempt) {
-                            HStack(spacing: 7) {
-                                Image(systemName: opening ? "lock.open.fill" : "lock.fill")
-                                    .font(.rj(13, weight: .semibold))
-                                Text(opening ? "正在打开…" : "解锁")
-                                    .font(.rj(14, weight: .semibold))
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(RJPrimaryButtonStyle())
-                        .disabled(password.isEmpty || opening)
-                        .opacity(password.isEmpty ? 0.55 : 1)
-                        .animation(.easeOut(duration: 0.18), value: password.isEmpty)
+                    unlockGlyph
 
-                        if canUseBiometric {
-                            Button {
-                                Task { await bioUnlock() }
-                            } label: {
-                                HStack(spacing: 7) {
-                                    if bioWorking {
-                                        ProgressView().controlSize(.small)
-                                    } else {
-                                        Image(systemName: store.biometrySymbol).font(.rj(15))
-                                    }
-                                    Text(bioWorking ? "正在验证…" : "用\(store.biometryName)解锁")
-                                        .font(.rj(13.5, weight: .medium))
-                                }
-                                .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(RJSubtleButtonStyle())
-                            .disabled(bioWorking)
-                        }
+                    Spacer(minLength: 14)
 
-                        if let errorText {
-                            HStack(spacing: 5) {
-                                Image(systemName: "exclamationmark.circle.fill").font(.rj(12))
-                                Text(errorText).font(.rj(12.5))
-                            }
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity)
-                            .transition(.opacity)
-                        }
-                    }
-                    .frame(width: 344)
-
-                    VStack(spacing: 10) {
-                        Button("忘记密码？") { withAnimation(.easeOut(duration: 0.18)) { showHint.toggle() } }
-                            .buttonStyle(RJPlainButtonStyle())
-                            .font(.rj(12.5))
-
-                        if store.biometricAvailable && !store.biometricEnabled {
-                            HStack(spacing: 7) {
-                                Image(systemName: store.biometrySymbol)
-                                    .font(.rj(13))
-                                    .foregroundStyle(Color.rjAccent)
-                                Text("本机支持\(store.biometryName)，用密码解锁后就能开启")
-                                    .font(.rj(12))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 13)
-                            .padding(.vertical, 8)
-                            .background(Capsule().fill(Color.rjAccent.opacity(0.10)))
-                        }
-
-                        if showHint {
-                            Text("密码只保存在本机，无法找回。\n如果确实忘了：退出 \(AppInfo.name)，删除\n~/Library/Application Support/日迹/config.json\n后重新打开即可重置（注意：如果没有开启加密，日记内容不受影响；开了加密则日记会无法解密）。")
-                                .font(.rj(12))
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                                .frame(width: 380)
-                                .padding(13)
-                                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(Color.primary.opacity(0.05)))
-                                .transition(.opacity.combined(with: .move(edge: .top)))
-                        }
-                    }
+                    panel(width: fieldW)
+                        .padding(.bottom, max(20, geo.size.height * 0.06))
                 }
-                .padding(38)
-                .background(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(.regularMaterial)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.10))
-                )
-                .shadow(color: .black.opacity(0.16), radius: 26, y: 10)
-                .scaleEffect(appeared ? 1 : 0.96)
-                .opacity(appeared ? 1 : 0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(40)
         }
+        .ignoresSafeArea()
         .onAppear {
             focused = true
-            withAnimation(.spring(response: 0.45, dampingFraction: 0.78)) { appeared = true }
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) { appeared = true }
             autoTryBiometric()
         }
     }
 
     // MARK: 背景
 
+    /// 整块纯色，没有渐变、没有卡片。
     private var background: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor)
-            RadialGradient(colors: [Color.rjAccent.opacity(0.20), Color.clear],
-                           center: .top, startRadius: 10, endRadius: 620)
-        }
-        .ignoresSafeArea()
+        Color.rjAccent
     }
 
-    // MARK: 锁图标
+    // MARK: 中间的指纹 / 锁
 
-    private var lockBadge: some View {
-        ZStack {
-            Circle()
-                .fill(LinearGradient(colors: [Color.rjAccent, Color.rjAccent.opacity(0.65)],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-                .frame(width: 82, height: 82)
-                .shadow(color: Color.rjAccent.opacity(opening ? 0.5 : 0.28),
-                        radius: opening ? 22 : 12, y: 6)
-            Image(systemName: opening ? "lock.open.fill" : "lock.fill")
-                .font(.rj(32, weight: .semibold))
-                .foregroundStyle(.white)
+    @ViewBuilder
+    private var unlockGlyph: some View {
+        if canUseBiometric {
+            Button {
+                Task { await bioUnlock() }
+            } label: {
+                ZStack {
+                    if bioWorking {
+                        ProgressView()
+                            .controlSize(.large)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: store.biometrySymbol)
+                            .font(.rj(54 * sizeScale, weight: .light))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: 96 * sizeScale, height: 96 * sizeScale)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("用\(store.biometryName)解锁")
+            .opacity(appeared ? 1 : 0)
+        } else {
+            Image(systemName: "lock.fill")
+                .font(.rj(46 * sizeScale, weight: .light))
+                .foregroundStyle(.white.opacity(0.92))
+                .frame(height: 96 * sizeScale)
+                .opacity(appeared ? 1 : 0)
         }
-        .scaleEffect(opening ? 1.12 : 1)
-        .animation(.spring(response: 0.34, dampingFraction: 0.55), value: opening)
-        .offset(x: shake ? -7 : 0)
-        .animation(.default.repeatCount(3, autoreverses: true).speed(7), value: shake)
+    }
+
+    // MARK: 底部：密码框 + 提示
+
+    private func panel(width: CGFloat) -> some View {
+        VStack(spacing: 10) {
+            field(width: width)
+
+            if let errorText {
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.circle.fill").font(.rj(12))
+                    Text(errorText).font(.rj(13, weight: .medium))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color.black.opacity(0.16)))
+                .transition(.opacity)
+            }
+
+            HStack(spacing: 14) {
+                Button("忘记密码？") {
+                    withAnimation(.easeOut(duration: 0.18)) { showHint.toggle() }
+                }
+                .buttonStyle(.plain)
+                .font(.rj(12.5))
+                .foregroundStyle(.white.opacity(0.85))
+
+                if store.biometricAvailable && !store.biometricEnabled {
+                    HStack(spacing: 6) {
+                        Image(systemName: store.biometrySymbol).font(.rj(12))
+                        Text("用密码解锁后可开启\(store.biometryName)")
+                            .font(.rj(12))
+                    }
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Color.white.opacity(0.16)))
+                }
+            }
+
+            if showHint {
+                Text("密码只保存在本机，无法找回。\n如果确实忘了：退出 \(AppInfo.name)，删除\n~/Library/Application Support/日迹/config.json\n后重新打开即可重置（注意：如果没有开启加密，日记内容不受影响；开了加密则日记会无法解密）。")
+                    .font(.rj(12))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .multilineTextAlignment(.center)
+                    .frame(width: 396)
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.black.opacity(0.18)))
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            Text("\(AppInfo.name) · 本地优先的日记本")
+                .font(.rj(11))
+                .foregroundStyle(.white.opacity(0.55))
+                .padding(.top, 2)
+        }
+        .padding(.horizontal, 24)
     }
 
     // MARK: 密码框
 
-    private var passwordField: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "key.fill")
-                .font(.rj(13))
-                .foregroundStyle(.tertiary)
+    private func field(width: CGFloat) -> some View {
+        HStack(spacing: 7) {
             SecureField("密码", text: $password)
                 .textFieldStyle(.plain)
-                .font(.rj(14.5))
+                .font(.rj(13.5))
+                .foregroundStyle(Color.black.opacity(0.85))
+                .tint(Color.rjAccent)
                 .focused($focused)
                 .onSubmit { attempt() }
+
+            Button(action: attempt) {
+                ZStack {
+                    Circle()
+                        .fill(Color.rjAccent.opacity(password.isEmpty ? 0.22 : 1))
+                        .frame(width: 24, height: 24)
+                    if opening {
+                        ProgressView().controlSize(.small).tint(.white)
+                    } else {
+                        Image(systemName: "arrow.right")
+                            .font(.rj(12, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(password.isEmpty || opening)
+            .help("解锁")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .frame(maxWidth: .infinity)
+        .padding(.leading, 14)
+        .padding(.trailing, 7)
+        .padding(.vertical, 7)
+        .frame(width: width)
         .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor))
+            RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(errorText == nil ? Color(nsColor: .separatorColor) : Color.red.opacity(0.75),
-                              lineWidth: errorText == nil ? 1 : 1.5)
-        )
-        .offset(x: shake ? -7 : 0)
+        .shadow(color: .black.opacity(0.10), radius: 12, y: 5)
+        // 锁屏底色不受深浅色模式影响（品牌色永远一样），但输入框是白底 ——
+        // 深色模式下不钉住 light，光标和输入的字会是白的，白底白字直接看不见。
+        .environment(\.colorScheme, .light)
+        .offset(x: shake ? -8 : 0)
         .animation(.default.repeatCount(3, autoreverses: true).speed(7), value: shake)
     }
 
@@ -251,6 +274,51 @@ struct LockView: View {
         }
         withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { opening = true }
         store.touch()
+    }
+}
+
+// MARK: - 反白 logo
+//
+// 应用图标是「白色底 + 品牌色本子 + 白字」（见 tools/gen_icon.swift）。
+// 锁屏底色本身就是品牌色，所以直接放图标会糊成一片 —— 这里把颜色关系反过来：
+// 本子用白色，本子上那三行用底色（视觉上就是镂空）。合起来就是「反白的 logo」。
+//
+// 所有比例跟 gen_icon.swift 里那一套对齐（本子高宽比 1.233、圆角 0.155、
+// 行宽 0.60/0.552/0.36、行高 0.0765、行距 0.2404、首行起点 0.3268），
+// 图标和锁屏上的 logo 才是同一个东西，改一边记得改另一边。
+
+struct LogoMark: View {
+    /// 本子的宽度。高度、圆角、三行字都按这个宽度推出来
+    var width: CGFloat
+    /// 三行字的颜色。传锁屏底色（品牌色）即可得到「镂空」效果
+    var lineColor: Color
+
+    var body: some View {
+        let w = width
+        let h = w * 1.233
+        let barH = w * 0.0765
+        let step = w * 0.2404
+        let x = w * 0.20
+        let y0 = w * 0.3268
+
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: w * 0.155, style: .continuous)
+                .fill(.white)
+
+            // 第一行是「今天写下的那一行」，实色；后两行淡一档，做出「还在写」的层次
+            bar(x: x, y: y0, w: w * 0.600, h: barH, color: lineColor, alpha: 1.0)
+            bar(x: x, y: y0 + step, w: w * 0.552, h: barH, color: lineColor, alpha: 0.60)
+            bar(x: x, y: y0 + step * 2, w: w * 0.360, h: barH, color: lineColor, alpha: 0.60)
+        }
+        .frame(width: w, height: h)
+    }
+
+    private func bar(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat,
+                     color: Color, alpha: Double) -> some View {
+        Capsule(style: .continuous)
+            .fill(color.opacity(alpha))
+            .frame(width: w, height: h)
+            .offset(x: x, y: y)
     }
 }
 

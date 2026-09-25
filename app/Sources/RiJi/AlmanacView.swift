@@ -3,9 +3,13 @@ import SwiftUI
 // MARK: - 农历 · 黄历 · 星座 的展示组件
 
 /// 一行式农历日期：「八月十五」+ 节日 + 假期
+///
+/// `flush = true` 时结尾不撑开 —— 给「日期 / 篇数 / 天气 / 农历 / 节日 / 休」
+/// 全挤在一行的场景用（日历那天列表的抬头）。
 struct LunarDateLine: View {
     var date: Date
     var compact = false
+    var flush = false
 
     private var almanac: AlmanacDay { Almanac.day(date) }
 
@@ -17,6 +21,7 @@ struct LunarDateLine: View {
             Text(a.lunarText)
                 .font(.rj(compact ? 11 : 12))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
 
             if let f = a.festivals.first {
                 Text(f)
@@ -26,6 +31,7 @@ struct LunarDateLine: View {
                     .padding(.vertical, 1)
                     .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(Color.rjAccent.opacity(0.12)))
+                    .lineLimit(1)
             }
 
             if let m = mark {
@@ -41,10 +47,13 @@ struct LunarDateLine: View {
                 Text(a.term)
                     .font(.rj(compact ? 10.5 : 11, weight: .medium))
                     .foregroundStyle(Color.rjAccent.opacity(0.85))
+                    .lineLimit(1)
             }
 
-            Spacer(minLength: 0)
+            if !flush { Spacer(minLength: 0) }
         }
+        // 挤在一行时，狭窄了宁可截断农历也不要换行
+        .lineLimit(1)
     }
 }
 
@@ -65,10 +74,7 @@ struct AlmanacCard: View {
             footer(d)
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: RJ.rowRadius, style: .continuous)
-            .fill(Color.primary.opacity(0.035)))
-        .overlay(RoundedRectangle(cornerRadius: RJ.rowRadius, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
+        .rjPanel()
     }
 
     // MARK: 头部
@@ -232,10 +238,7 @@ struct ZodiacCard: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: RJ.rowRadius, style: .continuous)
-            .fill(Color.primary.opacity(0.035)))
-        .overlay(RoundedRectangle(cornerRadius: RJ.rowRadius, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
+        .rjPanel()
     }
 
     private func starsRow(_ n: Int) -> some View {

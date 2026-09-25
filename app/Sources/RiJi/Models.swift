@@ -305,6 +305,58 @@ struct Entry: Identifiable, Codable, Hashable {
 
     var wordCount: Int { Entry.countWords(body) }
 
+    /// 正文里写的 `#标签`。
+    ///
+    /// 用户要求「在内容里直接写 # 就自然识别为标签」—— 顶部那行手动加标签的
+    /// 输入框已经去掉了，标签从此只有一个来源：正文。
+    var inlineTags: [String] { Entry.tagsIn(body) }
+
+    /// 全部标签 = 正文里的 `#标签` + 历史上存过的 tags 字段（旧日记、AI 写入的）。
+    /// 展示、筛选、搜索一律用它，`tags` 只是迁移兼容。
+    var allTags: [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for t in inlineTags + tags where seen.insert(t).inserted { out.append(t) }
+        return out
+    }
+
+    /// 从正文里抽 `#标签`。
+    ///
+    /// 几条刻意的克制：
+    /// - 只在行首或空白之后才算（所以 `https://x.com/#a` 里的 # 不算）
+    /// - `# 标题` 这种「井号 + 空格」不算（后面必须紧跟非空白）
+    /// - 代码围栏里的不算（写代码时随手一个 # 不该变成标签）
+    /// - 碰到中文标点、括号、引号就断开
+    static func tagsIn(_ text: String) -> [String] {
+        guard text.contains("#") else { return [] }
+        let pattern = "(?:^|[\\s（(【])#([^\\s#>，。！？；：、,.!?;:）)】》”\"'’]+)"
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+
+        var out: [String] = []
+        var seen = Set<String>()
+        var inFence = false
+
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            if line.trimmed.hasPrefix("```") {
+                inFence.toggle()
+                continue
+            }
+            if inFence { continue }
+
+            let lineStr = line as NSString
+            re.enumerateMatches(in: line, range: NSRange(location: 0, length: lineStr.length)) { m, _, _ in
+                guard let m, m.numberOfRanges > 1 else { return }
+                let tag = lineStr.substring(with: m.range(at: 1)).trimmed
+                // 纯数字不算（`#1` 通常是编号），太长也不像标签
+                guard !tag.isEmpty, tag.count <= 20,
+                      tag.rangeOfCharacter(from: CharacterSet.decimalDigits.inverted) != nil else { return }
+                if seen.insert(tag).inserted { out.append(tag) }
+            }
+        }
+        return out
+    }
+
     static func countWords(_ text: String) -> Int {
         var cjk = 0
         var latin = 0
@@ -409,6 +461,13 @@ struct AppSettings: Codable {
     var aiModel: String = "deepseek-chat"
     var aiTemperature: Double = 0.7
     var aiContextScope: String = "current"   // current / today / week / all
+    /// 小迹的人格（见 AIPersona.swift）。存 id，认不出来时退回「知心陪伴」
+    var aiPersona: String = "companion"
+    /// 小迹该怎么称呼使用者。留空就不特别提，让小迹自己拿捏。
+    /// 写了的话会直接进系统提示词，小迹每次回答都这么叫。
+    var userNickname: String = ""
+    /// 自动从日记里沉淀记忆（见 MemoryStore.swift）。关掉就只保留手动改的部分。
+    var aiAutoMemory: Bool = true
     var editorFontSize: Double = 15
     /// 写作区样式（行高 / 段间距 / 标题字号 / 装饰开关 / 版心宽度）。
     /// 用带默认值的结构体，旧配置缺这个字段时解码会退回默认规格。
@@ -431,6 +490,9 @@ struct AppSettings: Codable {
     var paperStyle: String = PaperStyle.plain.rawValue
     /// 生日，用来算星座运势。留空时界面上显示当天的太阳星座。
     var birthday: String = ""
+    /// MBTI 类型，例如 INFJ。留空就不提 —— 类型是人自己认领的，
+    /// 猜错了比不说更糟，所以这里只认用户选的那 16 个。
+    var mbti: String = ""
 }
 
 // MARK: - 设置的容错解码
@@ -442,11 +504,12 @@ struct AppSettings: Codable {
 extension AppSettings {
     enum CodingKeys: String, CodingKey {
         case dataPath, autoLockMinutes, encryptionEnabled, aiBaseURL, aiModel
-        case aiTemperature, aiContextScope, editorFontSize, appearance, accentHex
+        case aiTemperature, aiContextScope, aiPersona, editorFontSize, appearance, accentHex
+        case userNickname, aiAutoMemory
         case showWordCount, defaultJournalId, onThisDayEnabled, customPrompt
         case isConfigured, weatherCity, weatherAuto
         case mdStyle, gridTemplates, paperStyle
-        case birthday
+        case birthday, mbti
     }
 
     init(from decoder: Decoder) throws {
@@ -468,6 +531,10 @@ extension AppSettings {
         aiModel = value(.aiModel, "deepseek-chat")
         aiTemperature = value(.aiTemperature, 0.7)
         aiContextScope = value(.aiContextScope, "current")
+        // 人格只存 id。万一以后砍掉某个人格，老配置的 id 认不出来就退回默认的那个
+        aiPersona = AIPersonas.resolve(value(.aiPersona, AIPersonas.companion.id))
+        userNickname = value(.userNickname, "")
+        aiAutoMemory = value(.aiAutoMemory, true)
         editorFontSize = value(.editorFontSize, 15)
         appearance = value(.appearance, "system")
         accentHex = value(.accentHex, "#E8623C")
@@ -491,6 +558,7 @@ extension AppSettings {
         paperStyle = PaperStyle.from(value(.paperStyle, PaperStyle.plain.rawValue)).rawValue
         // 生日：留着原文，解析失败只影响星座卡的显示，不影响别的
         birthday = value(.birthday, "")
+        mbti = UserProfile.normalizeMBTI(value(.mbti, ""))
     }
 }
 

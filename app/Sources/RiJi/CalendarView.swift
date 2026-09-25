@@ -136,21 +136,35 @@ struct CalendarPane: View {
 
         return ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 7) {
-                    Text(Fmt.friendlyDay(selectedDay)).font(.rj(12.5, weight: .bold))
-                    Text("\(list.count) 篇").font(.rj(11)).foregroundStyle(.tertiary)
+                // 用户要求「日期 / X 篇 / 天气 / 农历 / 节日 / 休」全并到一行。
+                //
+                // 全挤一行必然会超宽，所以顺序按重要性排：日期和篇数不可压缩
+                // （fixedSize），天气也钉住，最后把弹性留给农历那一段 ——
+                // 实在放不下时截断的是农历，而不是把日期挤成省略号。
+                // 农历原文挂在 hover 提示里，截断了也查得到。
+                HStack(spacing: 6) {
+                    Text(Fmt.friendlyDay(selectedDay))
+                        .font(.rj(12.5, weight: .bold))
+                        .lineLimit(1)
+                        .fixedSize()
+                    Text("\(list.count) 篇")
+                        .font(.rj(11))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .fixedSize()
                     if let w = list.compactMap({ $0.weather }).first {
                         HStack(spacing: 3) {
                             Image(systemName: w.icon).font(.rj(11))
                             Text(w.summary).font(.rj(11))
                         }
                         .foregroundStyle(w.kind.tint)
+                        .lineLimit(1)
+                        .fixedSize()
                     }
+                    LunarDateLine(date: selectedDay, compact: true, flush: true)
+                        .help(Almanac.day(selectedDay).lunarText)
                     Spacer(minLength: 0)
                 }
-
-                // 农历 + 节日 + 假期
-                LunarDateLine(date: selectedDay)
 
                 // 黄历
                 AlmanacCard(date: selectedDay)
@@ -160,6 +174,9 @@ struct CalendarPane: View {
                     ZodiacCard(date: selectedDay, birthday: store.settings.birthday)
                 }
 
+                // 这一天的日记放在最下面 —— 用户要求「把日记放回到下面去」。
+                // （中途试过提到黄历前面，理由是「点开某天第一眼就能看到自己写的」，
+                //  但实际用起来黄历/星座是每天睁眼看一眼就过去的，日记要往下翻反而更顺手。）
                 HairLine().padding(.vertical, 2)
 
                 entries(list)
@@ -189,26 +206,82 @@ struct CalendarPane: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 26)
         } else {
-            VStack(spacing: 6) {
-                ForEach(list) { e in
-                    Button {
-                        withAnimation(.easeOut(duration: 0.15)) { selectedId = e.id }
-                    } label: {
-                        HStack(spacing: 9) {
-                            Text(e.timeText).font(.rj(12, design: .rounded)).foregroundStyle(.tertiary)
-                            Text(e.displayTitle).font(.rj(13.5, weight: .medium)).lineLimit(1)
-                            Spacer()
-                            if let w = e.weather {
-                                Image(systemName: w.icon).font(.rj(12)).foregroundStyle(w.kind.tint)
-                            }
-                            if !e.mood.isEmpty { Text(e.mood).font(.rj(12.5)) }
-                        }
-                        .padding(.horizontal, 11).padding(.vertical, 8)
-                        .frame(maxWidth: .infinity)
-                        .card(selected: selectedId == e.id)
+            timeline(list)
+        }
+    }
+
+    // MARK: 时间轴
+    //
+    // 一天里的几篇日记本来就是按时间发生的，之前却堆成一列没有时间感的卡片。
+    // 改成时间轴之后，哪篇是早上写的、中间空了多久、哪篇是深夜补的，一眼能看出来。
+    private func timeline(_ list: [Entry]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(list.enumerated()), id: \.element.id) { idx, e in
+                timelineRow(e, isLast: idx == list.count - 1)
+            }
+        }
+    }
+
+    private func timelineRow(_ e: Entry, isLast: Bool) -> some View {
+        let selected = selectedId == e.id
+        let journal = store.journal(for: e.journalId)
+        let accent = journal.map { Color(hex: $0.colorHex) } ?? .rjAccent
+
+        return Button {
+            withAnimation(.easeOut(duration: 0.15)) { selectedId = e.id }
+        } label: {
+            HStack(alignment: .top, spacing: 0) {
+                // 左：时间。右对齐，个位数和两位数 Hours 的右边缘才对得齐
+                Text(e.timeText)
+                    .font(.rj(11.5, design: .rounded))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .frame(width: 38, alignment: .trailing)
+                    .padding(.top, 13)
+                    .padding(.trailing, 8)
+
+                // 中：轴。竖线从节点下面一路拉到这一行底部，下一行的节点接上去；
+                // 最后一行不画下半段，线才不会拖出一截尾巴。
+                ZStack(alignment: .top) {
+                    if !isLast {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.13))
+                            .frame(width: 1.5)
+                            .frame(maxHeight: .infinity)
+                            .padding(.top, 22)
                     }
-                    .buttonStyle(PressableStyle(pressedScale: 0.985, pressedOpacity: 0.95))
+                    Circle()
+                        .fill(selected ? accent : Color(nsColor: .controlBackgroundColor))
+                        .frame(width: 9, height: 9)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(selected ? accent : Color.primary.opacity(0.22), lineWidth: 1.5)
+                        )
+                        .padding(.top, 15)
                 }
+                .frame(width: 18)
+                .frame(maxHeight: .infinity)
+
+                // 右：卡片。时间已经在左边了，卡片里不再重复
+                EntryCardBody(entry: e, selected: selected, showsTime: false, thumbSize: 44)
+                    .padding(9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .card(selected: selected, accent: accent)
+                    .padding(.leading, 8)
+                    .padding(.bottom, 10)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(PressableStyle(pressedScale: 0.985, pressedOpacity: 0.95))
+        .contextMenu {
+            Menu("移动到") {
+                ForEach(store.journals) { j in
+                    Button(j.name) { store.move(e, to: j.id) }
+                }
+            }
+            Divider()
+            Button("删除", role: .destructive) {
+                store.delete(e)
+                if selectedId == e.id { selectedId = nil }
             }
         }
     }
@@ -346,6 +419,7 @@ struct StatsView: View {
             }
             .padding(22)
         }
+        // 中栏内容直接从窗口顶部开始，不留标题栏让位（红绿灯在侧边栏那栏）
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -503,10 +577,20 @@ struct CalendarCell: View {
 
     /// 休息日（和周末无关，只认放假安排）用红字，符合「红字即休」的习惯
     private var isRedDay: Bool {
-        if isSelected { return true }
         if isToday { return true }
         if let m = mark { return m.isRest }
         return false
+    }
+
+    /// 日期数字的颜色。
+    ///
+    /// 这里踩过一个大坑：原来写的是 `isRedDay ? Color.rjAccent : Color.primary`，
+    /// 而 isRedDay 在「选中」时也返回 true —— 于是选中格子的底色是品牌色、
+    /// 数字也是品牌色，**字直接消失了**（用户反馈的「选中日期看不到日期」）。
+    /// 选中态必须单独判，并且用白色。
+    private var dayColor: Color {
+        if isSelected { return .white }
+        return isRedDay ? Color.rjAccent : Color.primary
     }
 
     var body: some View {
@@ -514,7 +598,7 @@ struct CalendarCell: View {
             VStack(spacing: 0) {
                 Text("\(Almanac.gregorian.component(.day, from: day))")
                     .font(.rj(13, weight: isToday || isSelected ? .bold : .regular))
-                    .foregroundStyle(isRedDay ? Color.rjAccent : Color.primary)
+                    .foregroundStyle(dayColor)
 
                 Text(subText)
                     .font(.rj(9))

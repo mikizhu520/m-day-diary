@@ -45,6 +45,16 @@ struct RiJiApp: App {
                 // AI 面板打开时要容得下：侧边栏 226 + 中栏 286 + 编辑区 300 + 面板 300
                 .frame(minWidth: 1120, minHeight: 660)
         }
+        // 去掉标题栏那条空带。
+        //
+        // 必须用官方 API，不能自己改 `styleMask` 插 `.fullSizeContentView`：
+        // 手动改完 SwiftUI 不会重算安全区，三栏会一起顶到窗口最上沿。
+        // `.hiddenTitleBar` 是系统自己做的同一件事，安全区交给系统管。
+        // 各栏内容的让位用 TitlebarSpacer（Theme.swift）。
+        //
+        // ⚠️ 曾经以为 `.hiddenTitleBar` / `.searchable` 是「界面顶部乱了」的元凶，
+        // 真凶是 DailyAdviceCard 里删掉 lineLimit 的 Text（见 DailyAdvice.swift 的长注释）。
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1320, height: 880)
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -201,10 +211,17 @@ struct MainView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(scope: $scope)
+                // 窗口用了 `.hiddenTitleBar`（见 RiJiApp），内容会铺满整窗，
+                // 三栏各自在内容顶部让出标题栏那一条 —— 不让的话侧边栏标题会被红黄绿压住、
+                // 中栏和编辑区的第一行会被窗口上边缘切掉（「界面顶部乱了」）。
+                // 侧边栏的让位在 SidebarView 自己内部，那儿才有正确的背景。
                 .navigationSplitViewColumnWidth(min: 226, ideal: 252, max: 320)
         } content: {
+            // 中栏不 Escape 让标题栏：红绿灯只在侧边栏那栏的左上角，
+            // 中栏内容直接从窗口顶部开始，顶部不留一条空白（用户要求「往上提」）。
             middleColumn
-                .navigationSplitViewColumnWidth(min: 286, ideal: 350, max: 460)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .navigationSplitViewColumnWidth(min: 286, ideal: 350, max: 460)
         } detail: {
             HStack(spacing: 0) {
                 detailColumn
@@ -226,11 +243,10 @@ struct MainView: View {
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
+            // 顶部让位在编辑区 / AI 面板 / 统计页各自内部做（它们底色各不相同）
         }
         // 界面字号改变时整块重建，保证所有文字立刻跟着变
         .id(uiScale)
-        // 搜索框放在侧边栏顶部：一是更符合 macOS 习惯，
-        // 二是别占着工具栏右侧，工具栏按钮才肯待在右边。
         .searchable(text: $searchText, isPresented: $searchPresented,
                     placement: .sidebar, prompt: "搜索日记、标签、内容")
         .sheet(isPresented: $showSettings) {
@@ -273,6 +289,9 @@ struct MainView: View {
             }
         }
         .onAppear { initialSelect() }
+        // 解锁后（以及刚打开时）把新写的日记沉淀进记忆，让小迹越用越懂你。
+        // 没填 API Key、没开自动更新、或者没有新日记时，这一步什么也不做。
+        .task { await store.refreshMemory(using: ai) }
     }
 
     // MARK: 提示条
@@ -483,7 +502,7 @@ struct MainView: View {
             let head = "共 \(store.visible.count) 篇 · \(store.totalWords()) 字"
             return store.hasClosedJournals ? head + " · 有日记本未解锁" : head
         case .onThisDay: return "往年同一天写下的"
-        case .tag(let t): return "共 \(store.visible.filter { $0.tags.contains(t) }.count) 篇"
+        case .tag(let t): return "共 \(store.visible.filter { $0.allTags.contains(t) }.count) 篇"
         default: return "共 \(listEntries.count) 篇"
         }
     }
@@ -499,7 +518,7 @@ struct MainView: View {
         case .journal(let id):
             return store.visible.filter { $0.journalId == id }
         case .tag(let t):
-            return store.visible.filter { $0.tags.contains(t) }
+            return store.visible.filter { $0.allTags.contains(t) }
         default:
             return store.visible
         }

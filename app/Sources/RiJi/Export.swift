@@ -62,7 +62,7 @@ enum Exporter {
         if panel.runModal() == .OK, let url = panel.url {
             var text = "# \(entry.displayTitle)\n\n"
             text += "> \(Fmt.full.string(from: entry.createdAt)) \(entry.timeText)"
-            if !entry.tags.isEmpty { text += "  ·  " + entry.tags.map { "#\($0)" }.joined(separator: " ") }
+            if !entry.allTags.isEmpty { text += "  ·  " + entry.allTags.map { "#\($0)" }.joined(separator: " ") }
             text += "\n\n" + entry.body + "\n"
             do {
                 try text.write(to: url, atomically: true, encoding: .utf8)

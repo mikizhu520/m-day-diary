@@ -27,6 +27,9 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // 让出标题栏那一条 —— 窗口用了 `.hiddenTitleBar`，内容会一直铺到窗口最上沿，
+            // 不让的话交通灯（红黄绿）会直接压在「MDay」上。
+            TitlebarSpacer()
             header
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -89,7 +92,8 @@ struct SidebarView: View {
             .background(RoundedRectangle(cornerRadius: RJ.rowRadius, style: .continuous)
                 .fill(Color.primary.opacity(0.055)))
 
-            // 每天一句，来自凯文·凯利《宝贵的人生建议》。
+            // 每天一句，来自凯文·凯利《宝贵的人生建议》和松浦弥太郎《100 个基本》，
+            // 两本轮换（见 LifeAdvice.quote）。
             // 放头部而不是内容区：内容区会滚，滚下去就看不见了，
             // 而「每天一眼」的东西必须在视线里。
             DailyAdviceCard()
@@ -444,10 +448,15 @@ struct SidebarRow: View {
             HStack(spacing: 9) {
                 if let dotColor {
                     if let badgeSymbol {
-                        JournalIconBadge(symbol: badgeSymbol, color: dotColor, size: 18.5)
+                        // 选中行的底就是这个日记本的本色，徽章再用本色就融进去了 ——
+                        // 反过做成「白底 + 本色图标」才看得清
+                        JournalIconBadge(symbol: badgeSymbol,
+                                         color: active ? .white : dotColor,
+                                         size: 18.5,
+                                         iconColor: active ? dotColor : .white)
                             .frame(width: 20)
                     } else {
-                        JournalDot(color: dotColor, size: 8.5)
+                        JournalDot(color: active ? .white : dotColor, size: 8.5)
                             .frame(width: 20)
                     }
                 } else if let symbol {
@@ -459,6 +468,10 @@ struct SidebarRow: View {
 
                 Text(title)
                     .font(.rj(13, weight: active ? .semibold : .regular))
+                    // 选中行的底是本色的实色渐变，文字必须是白的 ——
+                    // 之前这里没设过颜色，用的是默认 label 色，压在实色底上看着像褪了色。
+                    // 尾巴上的图标 / 篇数早就是白的了，只有标题漏了。
+                    .foregroundStyle(active ? Color.white : Color.primary)
                     .lineLimit(1)
 
                 Spacer(minLength: 4)

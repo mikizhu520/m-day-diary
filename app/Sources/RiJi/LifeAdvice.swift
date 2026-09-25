@@ -513,6 +513,28 @@ enum LifeAdvice {
         "我的这些建议并不是法则。它们就像帽子。假如一顶不合适，试试另一顶。",
     ]
 
+    /// 出处。卡片上要标出来 —— 引文不标来源，读的人没法判断该信几分。
+    static let source = "凯文·凯利《宝贵的人生建议》"
+    /// 展示用的一行（带破折号）
+    static let sourceLine = "—— " + source
+
+    /// 侧边栏「今日一句」最多显示多少字。
+    ///
+    /// 原来靠 `.lineLimit(4)` 截行数：侧边栏正文宽约 180pt、字号 11.5，
+    /// 一行十六七个汉字，四行下来大约 65 字。用户要求「限定字数再多 50 个」。
+    ///
+    /// 这里改成**按字数**截，而不是把行数从 4 调到 7 —— 行数会跟着界面缩放档位
+    /// （1.00～1.46）浮动，同一个 lineLimit 在不同字号下能看到的字数能差四成，
+    /// 「多 50 字」这个要求根本落不实。字数上限是确定的量。
+    static let cardCharLimit = 115
+
+    /// 卡片要显示的那一段：超长就截断加省略号，全文交给悬停提示。
+    static func cardText(_ full: String) -> String {
+        full.count > cardCharLimit
+            ? String(full.prefix(cardCharLimit)) + "…"
+            : full
+    }
+
     /// 今天这一句。
     ///
     /// 同一天永远是同一句（用年内日序 + 年份做种子），
@@ -527,4 +549,39 @@ enum LifeAdvice {
         let n = all.count
         return all[((seed &+ offset) % n + n) % n]
     }
+
+    // MARK: - 两个来源轮换
+
+    /// 今天这一句（带出处）。《100 个基本》和这本轮换着出，见 `todayQuote`。
+    static func quote(offset: Int = 0, date: Date = Date()) -> DailyQuote {
+        let cal = Calendar.current
+        let day = cal.ordinality(of: .day, in: .year, for: date) ?? 1
+        let year = cal.component(.year, from: date)
+        let seed = day &* 31 &+ year &* 7 &+ offset
+
+        // 为什么是「轮换」而不是「混进同一个池子」：
+        // 499 条对 100 条，混池的话《100 个基本》平均五天才能轮到一次，
+        // 加进来的新书等于白加。按种子奇偶分开取，两本各占一半。
+        // 顺带一个好处：连点「换一句」是在两本书之间来回跳，
+        // 而不是在同一本里跳到八竿子打不着的一条。
+        // 取 1 而不是 0：让「新加进来的那本」先轮上，加完当天就能看到效果
+        let useBasic = ((seed % 2) + 2) % 2 == 1
+        let step = seed / 2          // 种子加 1 时，一半的情况才推进一条
+        let pool = useBasic ? Basic100.all : all
+        let src = useBasic ? Basic100.source : source
+        guard !pool.isEmpty else { return DailyQuote(text: "", source: src) }
+        let n = pool.count
+        return DailyQuote(text: pool[((step % n) + n) % n], source: src)
+    }
+}
+
+/// 一句金句 + 它的出处。
+///
+/// 出处必须跟着句子走，不能像以前那样整个模块共用一个常量 ——
+/// 现在有两本书，写死一个就会把松浦的句子标成凯文·凯利。
+struct DailyQuote {
+    var text: String
+    var source: String
+    /// 展示用的一行（带破折号）
+    var sourceLine: String { "—— " + source }
 }

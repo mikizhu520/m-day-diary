@@ -289,8 +289,8 @@ struct MDInk {
         // 暖调近黑，跟 rjAccent 的赤陶同色系
         body: NSColor(name: nil) { a in
             a.rjIsDark
-                ? NSColor(srgbRed: 0.906, green: 0.902, blue: 0.898, alpha: 1)
-                : NSColor(srgbRed: 0.145, green: 0.137, blue: 0.133, alpha: 1)
+                ? NSColor(srgbRed: InkLevel.bodyDark, green: 0.902, blue: 0.898, alpha: 1)
+                : NSColor(srgbRed: InkLevel.bodyLight, green: 0.137, blue: 0.133, alpha: 1)
         },
         heading: NSColor(name: nil) { a in
             a.rjIsDark
@@ -359,6 +359,19 @@ struct MDInk {
         }
     )
 
+    /// 浅一档的正文色，给 AI 回答这类「整段都是机器写的字」用。
+    ///
+    /// 日记正文是自己的字，越清楚越好（用 `body`）；但小迹一口气吐出十几行
+    /// 全黑的字，压在灰底气泡上像一整块墨，读起来累。这里把明度提上来，
+    /// 让它看着像「参考资料」而不是「正文」，也不至于淡到看不清。
+    var bodySoft: NSColor {
+        NSColor(name: nil) { a in
+            a.rjIsDark
+                ? NSColor(srgbRed: InkLevel.bodySoftDark, green: 0.776, blue: 0.769, alpha: 1)   // #C8C6C4
+                : NSColor(srgbRed: InkLevel.bodySoftLight, green: 0.302, blue: 0.294, alpha: 1)  // #514D4B
+        }
+    }
+
     /// 行内代码的字色：比正文暖一档，跟赤陶呼应，又不至于像链接
     var inlineCodeText: NSColor {
         NSColor(name: nil) { a in
@@ -371,6 +384,22 @@ struct MDInk {
 
 extension NSAppearance {
     var rjIsDark: Bool { bestMatch(from: [.aqua, .darkAqua]) == .darkAqua }
+}
+
+/// 正文字色的明度刻度。
+///
+/// 单独拎出来是为了能自检。动态 `NSColor` 在无窗口的命令行里解不出确定的分量，
+/// 「AI 回答用的字确实比正文浅」这条断言就没法验证 —— 而它恰恰是这次改动的全部意义。
+/// 放在这里当常量，自检直接比数字。
+enum InkLevel {
+    /// 日记正文（浅色模式）—— 近黑，越清楚越好
+    static let bodyLight = 0.145
+    /// AI 回答（浅色模式）—— 提亮一档，读整段机器写的字不费劲
+    static let bodySoftLight = 0.318
+    /// 日记正文（深色模式）
+    static let bodyDark = 0.906
+    /// AI 回答（深色模式）—— 压暗一档，道理同上
+    static let bodySoftDark = 0.784
 }
 
 // MARK: - 排版装饰（交给 NSTextView 自绘，字符属性做不出来）

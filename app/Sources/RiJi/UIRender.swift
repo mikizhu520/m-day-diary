@@ -42,7 +42,7 @@ enum UIRender {
             mainComposite(store: store, ai: ai, todayId: todayId)
         }
         shot(out, "02-editor", 860, 900) {
-            EditorView(entryId: todayId, initialMode: .preview)
+            EditorView(entryId: todayId, initialMode: .live)
                 .environmentObject(store)
                 .environmentObject(ai)
         }
@@ -104,7 +104,7 @@ enum UIRender {
                 .environmentObject(store)
                 .environmentObject(ai)
             Divider()
-            EditorView(entryId: todayId, initialMode: .preview)
+            EditorView(entryId: todayId, initialMode: .live)
                 .environmentObject(store)
                 .environmentObject(ai)
         }
