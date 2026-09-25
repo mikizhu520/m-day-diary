@@ -1,0 +1,18 @@
+# ── 构建产物 ──
+# 都能用 ./build.sh 重新生成，没必要进仓库（.build 有 500MB+）
+dist/
+app/.build/
+
+# ── 界面截图 ──
+# 用 RiJi --snapshot 随时可以重新生成，而且每次跑都会变，diff 没意义
+screenshots/
+
+# ── 工作区私有数据 ──
+# 这里存的是个人档案、日程、记忆等私人内容，绝对不要提交
+.workbuddy/
+
+# ── macOS / 编辑器 ──
+.DS_Store
+*.xcuserdatad/
+*.xcuserstate
+.swiftpm/
