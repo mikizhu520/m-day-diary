@@ -705,7 +705,7 @@ struct SettingsView: View {
             SettingsSection(title: "关于你",
                             caption: "填了这些，小迹回答时会知道在对谁说话。生日和星座会一起记进记忆文件，MBTI 用来理解你处理信息和做决定的习惯 —— 只当参考，不会拿来给人贴标签。") {
                 SettingsRow(label: "希望小迹怎么称呼你", hint: "留空就不特别称呼") {
-                    TextField("例如：小竹、小岚、老大", text: binding(\.userNickname))
+                    TextField("例如：小竹、阿岚、老大", text: binding(\.userNickname))
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 190)
                 }

@@ -37,22 +37,28 @@ BAD=0
 
 # ── 一、绝不能出现的：真实身份、住址、家人、身体数据 ──
 #
+# 词表不放这个脚本里 —— 脚本要提交，把真实信息写在脚本里等于边查边漏。
+# 它们放在 tools/privacy-words.local（gitignored），格式与下面 DEFAULT 一行一个「词|原因」。
+# 文件不存在时退回一组中性占位词，只验证流程能跑。
+#
 # 说明：`com.meiling.riji` 这个 Bundle ID 是**故意保留**的。
 # 它决定 UserDefaults 归属和保险库密钥派生，改了等于换一个 App，
 # 已安装用户的配置和密钥会读不到 —— 权衡之后保留，不列入检查。
-FORBIDDEN=(
-    "小竹|昵称"
-    "小岚|本名"
-    "某县|老家"
-    "某新区|老家"
-    "某淀|老家"
-    "某城|老家"
-    "体重|身体数据"
-    "斤|身体数据"
-    "姐姐|家人"
-    "张老板|同事/上级"
-    "朱老板|前雇主"
-)
+WORDS_FILE="$ROOT/tools/privacy-words.local"
+FORBIDDEN=()
+if [ -f "$WORDS_FILE" ]; then
+    while IFS= read -r line; do
+        [ -n "$line" ] && FORBIDDEN+=("$line")
+    done < "$WORDS_FILE"
+else
+    FORBIDDEN=(
+        "示例昵称|昵称"
+        "示例本名|本名"
+        "示例地名|老家"
+        "体重|身体数据"
+        "斤|身体数据"
+    )
+fi
 echo "── 真实身份 / 住址 / 身体数据 ──"
 for pair in "${FORBIDDEN[@]}"; do
     kw="${pair%%|*}"

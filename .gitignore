@@ -16,3 +16,6 @@ screenshots/
 *.xcuserdatad/
 *.xcuserstate
 .swiftpm/
+
+# ── 隐私词表（本地专用，绝不入库）──
+tools/privacy-words.local
