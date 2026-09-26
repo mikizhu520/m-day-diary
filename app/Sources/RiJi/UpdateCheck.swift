@@ -20,9 +20,16 @@ struct UpdateInfo: Equatable {
 @MainActor
 enum UpdateChecker {
 
-    /// 版本清单地址。走 raw.githubusercontent.com，内容随仓库 main 分支走。
-    static let manifestURL = URL(string:
-        "https://raw.githubusercontent.com/mikizhu520/m-day-diary/main/latest.json")!
+    /// 版本清单地址，按顺序尝试。
+    /// ① jsDelivr：GitHub 内容的 CDN 镜像，国内网络可达（raw.githubusercontent.com 常超时）；
+    ///   分支引用有最多约 12 小时缓存，对「有没有新版本」这种粒度无所谓。
+    /// ② raw.githubusercontent.com：内容永远最新，海外或 CDN 失效时兜底。
+    static let manifestURLs: [URL] = [
+        URL(string: "https://cdn.jsdelivr.net/gh/mikizhu520/m-day-diary@main/latest.json")!,
+        URL(string: "https://raw.githubusercontent.com/mikizhu520/m-day-diary/main/latest.json")!
+    ]
+    /// 自检引用用：清单确实指向本仓库
+    static var manifestURL: URL { manifestURLs[0] }
 
     /// 上次自动检查的时间戳，存 UserDefaults（秒级 Unix 时间）
     static let lastCheckKey = "rj.update.lastCheck"
@@ -95,18 +102,19 @@ enum UpdateChecker {
         case unavailable         // 查不到（没网 / 超时 / 清单坏）
     }
 
-    /// 拉清单并和当前版本比。5 秒超时，失败不抛错只返回 .unavailable。
+    /// 拉清单并和当前版本比。5 秒超时，逐源尝试，失败不抛错只返回 .unavailable。
     static func fetchOutcome(now: Date = Date(),
                              defaults: UserDefaults = .standard) async -> Outcome {
         markChecked(now: now, defaults: defaults)
-        var req = URLRequest(url: manifestURL)
-        req.timeoutInterval = 5
-        req.cachePolicy = .reloadIgnoringLocalCacheData
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse, http.statusCode == 200,
-              let info = parse(data: data) else {
-            return .unavailable
+        for url in manifestURLs {
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 5
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+            guard let (data, resp) = try? await URLSession.shared.data(for: req),
+                  let http = resp as? HTTPURLResponse, http.statusCode == 200,
+                  let info = parse(data: data) else { continue }
+            return compare(info.version, AppInfo.version) > 0 ? .newer(info) : .upToDate
         }
-        return compare(info.version, AppInfo.version) > 0 ? .newer(info) : .upToDate
+        return .unavailable
     }
 }
