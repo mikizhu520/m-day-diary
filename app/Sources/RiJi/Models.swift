@@ -244,6 +244,10 @@ struct Entry: Identifiable, Codable, Hashable {
     /// 天气接口拿回真实城市后再覆盖 —— 所以它既是「写作地点」也是天气的落点记录。
     var city: String = ""
     var encrypted: Bool = false
+    /// 这一篇解密失败了（密文还在盘上，只是钥匙不对 / 文件坏了）。
+    /// 只是内存标记，不落盘。有这个标记的条目**绝不写盘** ——
+    /// 否则换密码时的重加密扫会拿空内容把原文覆盖掉，那就真找不回来了。
+    var decryptFailed: Bool = false
     /// 相对于数据根目录的路径，例如 journals/<journalId>/2026-09-25/160412-a1b2.md
     var relPath: String = ""
 
@@ -570,6 +574,25 @@ struct SecurityRecord: Codable {
     var verifier: String = ""
     var iterations: Int = 120_000
     var keyCheck: String = ""     // 加密开启时用于校验密码
+
+    init() {}
+
+    // 这里绝对不能省：salt / verifier 是所有加密日记的命根子。
+    // 用合成的 Codable，将来任何版本往这个结构里加一个字段，
+    // 旧 config 解码就会整段失败 → 密码参数全丢 → 老日记永远解不开。
+    // 逐字段 decodeIfPresent 之后，加字段、缺字段、坏字段都只是退回默认值。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            guard let v = try? c.decodeIfPresent(T.self, forKey: key) else { return fallback }
+            return v
+        }
+        hasPassword = value(.hasPassword, false)
+        salt = value(.salt, "")
+        verifier = value(.verifier, "")
+        iterations = value(.iterations, 120_000)
+        keyCheck = value(.keyCheck, "")
+    }
 }
 
 // MARK: - 心情

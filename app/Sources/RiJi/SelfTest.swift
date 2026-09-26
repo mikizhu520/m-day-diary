@@ -17,6 +17,7 @@ enum SelfTest {
         crypto()
         roundTripPlain()
         roundTripEncrypted()
+        encryptedSurvival()
         legacyParse()
         weather()
         settingsCompat()
@@ -209,6 +210,96 @@ enum SelfTest {
         // 换密码后旧密文不可读
         let newKey = Crypto.key(password: "newpassword", salt: salt, iterations: 500)
         check("换密码后旧密文失效", Crypto.decrypt(cipher, key: newKey) == nil)
+    }
+
+    // MARK: 加密的版本兼容与自救
+    //
+    // 用户原话：只要是在这个软件上写的加密日记，不管什么版本，后续版本、前续版本都能打开。
+    // 加密日记的钥匙 = PBKDF2(密码, salt, iterations)，salt/verifier 存在 config.json 里。
+    // 历史教训是「config 整段解码失败会把密码参数一起连坐丢掉」—— 这里把四个雷逐一排掉：
+    //   1. SecurityRecord 容错解码（将来加字段不再连坐）
+    //   2. config 解不开时按段抢救
+    //   3. security.json 备份兜底
+    //   4. 解密失败的条目绝不写盘（换密码重加密时不能拿空壳覆盖原文）
+
+    private static func encryptedSurvival() {
+        print("\n· 加密的版本兼容与自救")
+
+        // ① SecurityRecord：缺字段、坏字段、多字段都不许连坐
+        let missing = try? JSONDecoder().decode(SecurityRecord.self, from: Data(#"{"hasPassword":true}"#.utf8))
+        check("SecurityRecord 缺字段可解码", missing?.hasPassword == true)
+        check("SecurityRecord 缺字段盐退回空", missing?.salt.isEmpty == true)
+        check("SecurityRecord 缺字段迭代次数退回默认", missing?.iterations == 120_000)
+        let extra = try? JSONDecoder().decode(SecurityRecord.self, from: Data(
+            #"{"hasPassword":true,"salt":"abc","verifier":"d","iterations":1000,"keyCheck":"e","futureField":42}"#.utf8))
+        check("SecurityRecord 多了未知字段可解码", extra?.salt == "abc")
+        let roundTrip = SecurityRecord()
+        let rtData = try? JSONEncoder().encode(roundTrip)
+        let rtBack = rtData.flatMap { try? JSONDecoder().decode(SecurityRecord.self, from: $0) }
+        check("SecurityRecord 往返一致", rtBack?.hasPassword == false && rtBack?.iterations == 120_000)
+
+        // ② config 整体解码失败时，security 段能被抢救回来
+        let store = Store()
+        store.enterTestMode()
+        let cfgURL = store.dataURL.appendingPathComponent("config.json")
+        // 故意写一份「settings 段坏了」的 config —— 整段 decode 必失败
+        let broken = #"{"settings": "not-a-dict", "journals": [], "security": {"hasPassword": true, "salt": "c2FsdA==", "verifier": "deadbeef", "iterations": 120000, "keyCheck": "kc"}}"#
+        try? broken.write(to: cfgURL, atomically: true, encoding: .utf8)
+        store.rescueConfig(from: cfgURL)
+        check("config 损坏时抢救出密码状态", store.security.hasPassword)
+        check("config 损坏时抢救出盐", store.security.salt == "c2FsdA==")
+        check("config 损坏时抢救出 verifier", store.security.verifier == "deadbeef")
+
+        // ③ security.json 备份：写一份、丢一份、救回来
+        store.security.salt = "bmV3c2FsdA=="
+        store.saveConfig()
+        let backupURL = store.dataURL.appendingPathComponent("security.json")
+        check("saveConfig 会写 security.json 备份", FileManager.default.fileExists(atPath: backupURL.path))
+        store.security = SecurityRecord()   // 模拟 config 被重置
+        store.restoreSecurityBackup()
+        eq("备份把盐救回来", store.security.salt, "bmV3c2FsdA==")
+        check("备份把密码状态救回来", store.security.hasPassword)
+
+        // ④ 解密失败的条目绝不写盘
+        store.security = SecurityRecord()
+        store.settings.encryptionEnabled = true   // masterKey 为 nil（未解锁）
+        let locked = store.parse("---\nid: X\nencrypted: true\n---\n\nENC1:AAAA", relPath: "journals/J1/2026-01-01/x.md")
+        check("未解锁时标题是已加密占位", locked?.title.contains("已加密") == true)
+        check("未解锁的条目带写盘禁令", locked?.decryptFailed == true)
+        guard let bad = store.parse("---\nid: Y\nencrypted: true\n---\n\nENC1:AAAA", relPath: "journals/J1/2026-01-01/y.md") else {
+            check("解密失败的条目能解析", false)
+            exit(1)
+        }
+        check("解密失败的条目带写盘禁令", bad.decryptFailed)
+        let ok = store.writeFile(for: bad)
+        check("解密失败的条目拒绝写盘", !ok)
+
+        // ⑤ 换密码的防误伤：有解不开的日记时拒绝换
+        store.setPassword("oldpass")
+        store.entries = [bad]
+        let changed = store.changePassword(from: "oldpass", to: "newpass")
+        check("有解不开的日记时拒绝换密码", !changed)
+        // 修好之后（没有解不开的条目）换密码恢复正常
+        store.entries = []
+        check("没有坏条目时换密码放行", store.changePassword(from: "oldpass", to: "newpass"))
+
+        // ⑥ 孤儿日记本自动收养：config 名单丢了日记本，磁盘目录还在 → 补回来
+        let orphanID = "11111111-2222-3333-4444-555555555555"
+        let orphanDir = store.journalsDir.appendingPathComponent(orphanID, isDirectory: true)
+        let dayDir = orphanDir.appendingPathComponent("2026-01-01", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dayDir, withIntermediateDirectories: true)
+        try? "这是一篇找回的日记。".write(to: dayDir.appendingPathComponent("120000-abcdef.md"),
+                                          atomically: true, encoding: .utf8)
+        // 空目录不该被收养
+        let emptyID = "99999999-8888-7777-6666-555555555555"
+        try? FileManager.default.createDirectory(at: store.journalsDir.appendingPathComponent(emptyID),
+                                                 withIntermediateDirectories: true)
+        check("启动时日记本名单里没有孤儿", !store.journals.contains { $0.id == orphanID })
+        store.loadEntries()
+        check("孤儿日记本被收养", store.journals.contains { $0.id == orphanID })
+        check("空目录不会被收养", !store.journals.contains { $0.id == emptyID })
+        eq("收养的日记能读到", store.entries.first?.body ?? "", "这是一篇找回的日记。")
+        check("收养的日记对界面可见", store.visible.contains { $0.body == "这是一篇找回的日记。" })
     }
 
     // MARK: 无 frontmatter 的旧文件

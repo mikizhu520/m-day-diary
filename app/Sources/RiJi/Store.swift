@@ -104,7 +104,8 @@ final class Store: ObservableObject {
         // 而下面 @Published 的赋值（settings 等）就已经算用 self 了。
         memory = MemoryStore(fileURL: support.appendingPathComponent("memory.json"))
 
-        if let data = try? Data(contentsOf: support.appendingPathComponent("config.json")),
+        let configURL = support.appendingPathComponent("config.json")
+        if let data = try? Data(contentsOf: configURL),
            let cfg = try? JSONDecoder().decode(ConfigFile.self, from: data) {
             settings = cfg.settings
             security = cfg.security
@@ -114,6 +115,14 @@ final class Store: ObservableObject {
             settings = AppSettings(dataPath: defaultData.path)
             journals = Journal.defaults
             settings.defaultJournalId = journals.first?.id ?? ""
+            // config 整体解码失败 ≠ 一切归零。比如旧版本读新 config、或文件局部损坏，
+            // 整段 decode 会失败 —— 这时候要把能救的段救回来，尤其是 security：
+            // 密码参数（salt / verifier）一丢，所有已加密日记就永远解不开了。
+            rescueConfig(from: configURL)
+        }
+        // config 里的密码参数丢了（被重置 / 损坏），但备份文件还在 → 恢复
+        if !security.hasPassword || security.salt.isEmpty {
+            restoreSecurityBackup()
         }
         aiKeyPresent = (AIKeyStore.read()?.nilIfEmpty != nil)
         isLocked = security.hasPassword
@@ -206,6 +215,21 @@ final class Store: ObservableObject {
         hasLoaded = true
     }
 
+    /// 仅用于自检：切到一次性临时目录并清空状态，测试绝不触碰用户真实数据
+    func enterTestMode() {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("rj-selftest-\(UUID().uuidString.prefix(6))", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        rootURL = tmp
+        supportURL = tmp
+        memory.retarget(tmp.appendingPathComponent("memory.json"))
+        settings = AppSettings(dataPath: tmp.path)
+        security = SecurityRecord()
+        journals = Journal.defaults
+        entries = []
+        isLocked = false
+    }
+
     func bootstrap() {
         try? FileManager.default.createDirectory(at: journalsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: attachmentsDir, withIntermediateDirectories: true)
@@ -256,6 +280,16 @@ final class Store: ObservableObject {
 
     func changePassword(from old: String, to new: String) -> Bool {
         guard verify(old) else { return false }
+        // 换密码会用新密钥把所有加密日记重写一遍。动手前先确认每一条都解得开 ——
+        // 哪怕有一篇解不开（比如上一版加密时盐已经对不上了），重写就会把它变成空壳。
+        // 这时宁可拒绝换密码，也不能毁掉原文。
+        if settings.encryptionEnabled {
+            let broken = entries.filter { $0.encrypted && $0.decryptFailed }
+            if !broken.isEmpty {
+                show("有 \(broken.count) 篇加密日记当前无法解密，已暂停换密码以保护原文。")
+                return false
+            }
+        }
         let salt = Crypto.makeSalt()
         let iterations = security.iterations
         let newKey = Crypto.key(password: new, salt: salt, iterations: iterations)
@@ -694,6 +728,8 @@ final class Store: ObservableObject {
             guard let key = masterKey else {
                 entry.title = "🔒 已加密"
                 entry.body = ""
+                // 没解锁时读到的只是占位。标记防止任何写盘路径拿占位内容覆盖原文。
+                entry.decryptFailed = true
                 return entry
             }
             guard let plain = Crypto.decrypt(payload, key: key),
@@ -701,6 +737,7 @@ final class Store: ObservableObject {
                   let decoded = try? JSONDecoder().decode(EncryptedPayload.self, from: data) else {
                 entry.title = "⚠️ 解密失败"
                 entry.body = ""
+                entry.decryptFailed = true
                 return entry
             }
             entry.title = decoded.title
@@ -716,9 +753,13 @@ final class Store: ObservableObject {
         return entry
     }
 
+    // internal：自检要直接验证「解密失败的条目拒绝写盘」
     @discardableResult
-    private func writeFile(for entry: Entry) -> Bool {
+    func writeFile(for entry: Entry) -> Bool {
         var e = entry
+        // 命门：解密失败的条目，盘上的密文是唯一真身。
+        // 这时候写盘 = 拿着空壳（标题占位 + 空 body）把原文覆盖掉，神仙也救不回来。
+        if e.encrypted, e.decryptFailed { return false }
         if e.relPath.isEmpty { e.relPath = makeRelPath(for: e) }
         let url = path(for: e)
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -735,6 +776,8 @@ final class Store: ObservableObject {
     // MARK: - 加载全部条目
 
     func loadEntries() {
+        // 先收养孤儿日记本，否则这一轮扫描出来的日记没有归属，界面上还是看不见
+        adoptOrphanedJournals()
         guard let enumerator = FileManager.default.enumerator(at: journalsDir, includingPropertiesForKeys: [.isRegularFileKey]) else {
             entries = []
             return
@@ -747,6 +790,46 @@ final class Store: ObservableObject {
             if let e = parse(text, relPath: rel) { loaded.append(e) }
         }
         entries = loaded.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    // MARK: 孤儿日记本
+    //
+    // 怎么来的？config 被重置时（整体解码失败、换机器、手动删过），journals 名单
+    // 会换成一套新的随机 id，而日记文件还躺在旧 id 的目录里 —— 于是那几篇日记
+    // 谁也找不到，看起来就像「更新之后日记打不开了」。
+    // 目录是磁盘上的真值：名单里缺的日记本，按目录 id 补回来，日记一个字不丢。
+
+    @discardableResult
+    func adoptOrphanedJournals() -> Int {
+        let known = Set(journals.map { $0.id })
+        guard let dirs = try? FileManager.default.contentsOfDirectory(
+            at: journalsDir, includingPropertiesForKeys: [.isDirectoryKey]) else { return 0 }
+        var adopted = 0
+        for dir in dirs where dir.hasDirectoryPath {
+            let id = dir.lastPathComponent
+            // 只认 UUID 形态的目录名，别把 attachments 之类的捞进来
+            guard !known.contains(id), id.count >= 8,
+                  id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else { continue }
+            // 目录里确实有内容（日记或日期子目录）才收养
+            guard let children = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil),
+                  !children.isEmpty else { continue }
+            let palette = Journal.palette
+            let symbols = ["book.fill", "bookmark.fill", "leaf.fill", "sparkles"]
+            let journal = Journal(id: id,
+                                  name: adopted == 0 ? "找回的日记本" : "找回的日记本 \(adopted + 1)",
+                                  colorHex: palette[journals.count % palette.count],
+                                  symbol: symbols[adopted % symbols.count],
+                                  createdAt: Date(),
+                                  locked: false)
+            journals.append(journal)
+            adopted += 1
+        }
+        if adopted > 0 {
+            if settings.defaultJournalId.isEmpty { settings.defaultJournalId = journals.first?.id ?? "" }
+            saveConfig()
+            objectWillChange.send()
+        }
+        return adopted
     }
 
     // MARK: - 条目操作
@@ -1107,6 +1190,70 @@ final class Store: ObservableObject {
             try? FileManager.default.createDirectory(at: supportURL, withIntermediateDirectories: true)
             try? data.write(to: supportURL.appendingPathComponent("config.json"), options: .atomic)
         }
+        // 密码参数另存一份。它太重要了 —— 加密日记的钥匙全靠它派生，
+        // config 万一哪天解码失败或被重置，这份备份就是唯一的后悔药。
+        writeSecurityBackup()
+    }
+
+    // MARK: 密码参数的抢救与备份
+    //
+    // 解密密钥 = PBKDF2(密码, salt, iterations)。salt / verifier 存在 config.json 里，
+    // config 一旦整体解码失败或被重置，salt 就没了 —— 密文还在盘上，钥匙没了。
+    // 两道保险：
+    //   1. config 解不开时按段抢救（security 优先，见 rescueConfig）
+    //   2. 每次 saveConfig 都把 security 段多写一份 security.json（0600）
+
+    /// config 整体解码失败时的分段抢救。能救多少救多少，
+    /// 顺序是 security（命根子）→ journals → settings。
+    func rescueConfig(from url: URL) {
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let dec = JSONDecoder()
+        // 段的类型不对（比如 settings 塌成了字符串）就跳过 ——
+        // 注意 JSONSerialization 遇到非法顶层对象抛的是 ObjC 异常，Swift 的 try 接不住，
+        // 所以必须先用 as? 把类型守好
+        if let raw = obj["security"] as? [String: Any],
+           let d = try? JSONSerialization.data(withJSONObject: raw),
+           let s = try? dec.decode(SecurityRecord.self, from: d),
+           s.hasPassword, !s.salt.isEmpty {
+            security = s
+        }
+        if let raw = obj["journals"] as? [[String: Any]],
+           let d = try? JSONSerialization.data(withJSONObject: raw),
+           let j = try? dec.decode([Journal].self, from: d), !j.isEmpty {
+            journals = j
+            if settings.defaultJournalId.isEmpty { settings.defaultJournalId = j.first?.id ?? "" }
+        }
+        if let raw = obj["settings"] as? [String: Any],
+           let d = try? JSONSerialization.data(withJSONObject: raw),
+           let s = try? dec.decode(AppSettings.self, from: d), !s.dataPath.isEmpty {
+            settings = s
+            if FileManager.default.fileExists(atPath: s.dataPath) {
+                rootURL = URL(fileURLWithPath: s.dataPath)
+            }
+        }
+    }
+
+    private var securityBackupURL: URL {
+        supportURL.appendingPathComponent("security.json")
+    }
+
+    func writeSecurityBackup() {
+        guard let data = try? JSONEncoder().encode(security) else { return }
+        try? FileManager.default.createDirectory(at: supportURL, withIntermediateDirectories: true)
+        try? data.write(to: securityBackupURL, options: .atomic)
+        // 跟保险库一个待遇：只有本人可读
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: securityBackupURL.path)
+    }
+
+    /// 只有在当前确实没有可用密码参数时才覆盖 ——
+    /// config 是真值，备份只兜底，不能反过来把新状态冲掉。
+    func restoreSecurityBackup() {
+        guard let data = try? Data(contentsOf: securityBackupURL),
+              let s = try? JSONDecoder().decode(SecurityRecord.self, from: data),
+              s.hasPassword, !s.salt.isEmpty else { return }
+        security = s
     }
 
     // MARK: - 迁移数据目录
