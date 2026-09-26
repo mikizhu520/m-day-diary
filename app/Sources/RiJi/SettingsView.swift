@@ -952,6 +952,46 @@ struct SettingsView: View {
                     .font(.rj(12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                // 检查更新。启动时也会静默查一次（同一天最多一次），
+                // 查到新版本后那行「下载新版本」会一直留在这儿，直到升级到位。
+                Divider()
+                HStack(spacing: 10) {
+                    if let u = store.latestUpdate {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("最新版 v\(u.version)")
+                                .font(.rj(12.5, weight: .semibold))
+                                .foregroundStyle(Color.rjAccent)
+                            if !u.notes.isEmpty {
+                                Text(u.notes).font(.rj(11.5)).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button {
+                            if let url = URL(string: u.downloadURL) { NSWorkspace.shared.open(url) }
+                        } label: {
+                            Label("下载新版本", systemImage: "arrow.down.circle")
+                                .font(.rj(12, weight: .semibold))
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                        .buttonStyle(RJPrimaryButtonStyle())
+                    } else {
+                        Text("当前已是最新版本")
+                            .font(.rj(12))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            Task { await store.checkForUpdates(manual: true) }
+                        } label: {
+                            Label("检查更新", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.rj(12, weight: .semibold))
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                        .buttonStyle(RJSubtleButtonStyle())
+                    }
+                }
             }
 
             SettingsSection(title: "开发者", caption: "有问题、有想法，随时找我。") {
@@ -1005,7 +1045,7 @@ struct SettingsView: View {
             }
 
             SettingsSection(title: "隐私",
-                            caption: "数据全部保存在你自己的电脑上，不上传任何服务器。只有在你使用 AI 功能时，相关内容才会发送给你配置的模型接口；只有在你开启天气功能时，才会发送一个城市名。")
+                            caption: "数据全部保存在你自己的电脑上，不上传任何服务器。只有在你使用 AI 功能时，相关内容才会发送给你配置的模型接口；只有在你开启天气功能时，才会发送一个城市名；检查更新只是下载一次版本清单文件，不带任何个人信息。")
 
             SettingsSection(title: "文件格式",
                             caption: "日记是标准 Markdown，front matter 里保存标题、标签、心情、天气等元数据。用 Typora、VS Code、Obsidian 都能直接打开。")

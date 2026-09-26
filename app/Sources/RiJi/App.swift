@@ -120,6 +120,13 @@ struct RootView: View {
         .task {
             if SnapshotRunner.enabled { await SnapshotRunner.run(store: store) }
         }
+        // 检查更新：启动后等 5 秒再查 —— 先把界面、日记、天气这些正事办完，
+        // 别跟启动抢资源。节流（同一天最多一次）和「查不到就闭嘴」都在 Store 里。
+        .task {
+            guard !SnapshotRunner.enabled else { return }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            await store.checkForUpdates(manual: false)
+        }
         .onDisappear { removeMonitor() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             store.flush()

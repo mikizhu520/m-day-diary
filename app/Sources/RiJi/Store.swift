@@ -55,6 +55,8 @@ final class Store: ObservableObject {
     @Published var showBiometricOffer = false
     /// 询问期间暂存刚输入的密码（仅内存，用于一键开启）
     private var biometricOfferPassword: String?
+    /// 最近一次检查到的更新。nil = 没查过或已是最新。「设置 → 关于」据此显示下载行。
+    @Published var latestUpdate: UpdateInfo?
 
     // MARK: 日记本锁
 
@@ -1328,6 +1330,28 @@ final class Store: ObservableObject {
 
     func show(_ message: String) {
         toast = message
+    }
+
+    // MARK: - 检查更新
+    //
+    // 自动（启动后延迟几秒）与手动（设置 → 关于）共用这一条路径：
+    //   · 自动：节流在 UpdateChecker.shouldAutoCheck，查不到就完全静默，
+    //     只有真有新版本才出提示条，并把结果存进 latestUpdate 供关于页显示
+    //   · 手动：跳过节流立刻查，无论结果是什么都出一条提示让人心里有数
+
+    func checkForUpdates(manual: Bool) async {
+        if !manual && !UpdateChecker.shouldAutoCheck() { return }
+        let outcome = await UpdateChecker.fetchOutcome()
+        switch outcome {
+        case .newer(let info):
+            latestUpdate = info
+            show("发现新版本 v\(info.version) · 「设置 → 关于」可下载")
+        case .upToDate:
+            latestUpdate = nil
+            if manual { show("已是最新版本 v\(AppInfo.version)") }
+        case .unavailable:
+            if manual { show("暂时无法检查更新，请确认网络") }
+        }
     }
 }
 

@@ -38,6 +38,7 @@ enum SelfTest {
         holiday()
         zodiac()
         uiScale()
+        updateCheck()
         persona()
         print("\n──────────────────────")
         print("通过 \(passed) 项，失败 \(failed) 项")
@@ -2210,5 +2211,53 @@ enum SelfTest {
               "正文 \(InkLevel.bodyDark) → AI \(InkLevel.bodySoftDark)")
         check("两档字色确实不同", MDInk.current.body != MDInk.current.bodySoft)
         check("浅一档但没淡到看不清", InkLevel.bodySoftLight < 0.5)
+    }
+
+    // MARK: 检查更新
+
+    private static func updateCheck() {
+        print("▸ 检查更新")
+        let C = UpdateChecker.self
+
+        // 版本比较：逐段数值，不是字符串比较（"0.2.10" 若按字典序会输给 "0.2.9"）
+        check("版本比较：低位小", C.compare("0.0.2", "0.0.3") < 0)
+        check("版本比较：相等", C.compare("0.0.2", "0.0.2") == 0)
+        check("版本比较：段数不齐补零", C.compare("0.2", "0.2.0") == 0)
+        check("版本比较：两位数段", C.compare("0.2.10", "0.2.9") > 0,
+              "字典序会把 10 排在 9 前面")
+        check("版本比较：跨段", C.compare("1.0.0", "0.9.9") > 0)
+        check("版本归一去掉 v 前缀", C.normalize(" v0.3.0 ") == "0.3.0")
+
+        // 清单解析：类型不对 / 字段缺失都不能崩，返回 nil 当没查到
+        let good = #"{"version":"v0.3.0","notes":"修复若干问题","dmg":"https://example.com/MDay-0.3.0.dmg"}"#
+        let parsed = C.parse(data: Data(good.utf8))
+        check("清单解析出版本号", parsed?.version == "0.3.0")
+        check("清单解析出说明", parsed?.notes == "修复若干问题")
+        check("清单解析出下载地址", parsed?.downloadURL.contains("MDay-0.3.0.dmg") == true)
+        check("清单坏 JSON 返回 nil", C.parse(data: Data("not json".utf8)) == nil)
+        check("清单缺版本返回 nil", C.parse(data: Data(#"{"notes":"x"}"#.utf8)) == nil)
+        check("清单版本不是数字返回 nil",
+              C.parse(data: Data(#"{"version":"最新版"}"#.utf8)) == nil)
+        check("清单顶层不是字典返回 nil",
+              C.parse(data: Data("[1,2,3]".utf8)) == nil)
+        check("notes/dmg 缺省为空串",
+              C.parse(data: Data(#"{"version":"1.0"}"#.utf8))?.downloadURL == "")
+
+        // 节流：独立 UserDefaults 域，不碰真实的「上次检查时间」
+        let d = UserDefaults(suiteName: "selftest.update")!
+        d.removePersistentDomain(forName: "selftest.update")
+        let now = Date()
+        check("从没查过 → 该查", C.shouldAutoCheck(now: now, defaults: d))
+        C.markChecked(now: now, defaults: d)
+        check("刚查过 1 小时 → 不查",
+              !C.shouldAutoCheck(now: now.addingTimeInterval(3600), defaults: d))
+        check("查过 25 小时 → 该查",
+              C.shouldAutoCheck(now: now.addingTimeInterval(25 * 3600), defaults: d))
+
+        // 清单地址必须指向本仓库，且当前版本号能被正确归一
+        check("清单地址在 m-day-diary 仓库里",
+              C.manifestURL.absoluteString.contains("mikizhu520/m-day-diary"))
+        check("当前版本号归一后仍是数字段",
+              Int(C.normalize(AppInfo.version).split(separator: ".")[0]) != nil)
     }
 }
