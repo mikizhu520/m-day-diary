@@ -104,6 +104,12 @@ final class Store: ObservableObject {
         // 而下面 @Published 的赋值（settings 等）就已经算用 self 了。
         memory = MemoryStore(fileURL: support.appendingPathComponent("memory.json"))
 
+        // 先按默认值就位（Swift 的初始化规则要求所有存储属性先于任何 self 方法调用），
+        // 再按优先级从磁盘覆盖：主 config → 整份备份 → 分段抢救
+        settings = AppSettings(dataPath: defaultData.path)
+        journals = Journal.defaults
+        settings.defaultJournalId = journals.first?.id ?? ""
+
         let configURL = support.appendingPathComponent("config.json")
         if let data = try? Data(contentsOf: configURL),
            let cfg = try? JSONDecoder().decode(ConfigFile.self, from: data) {
@@ -111,10 +117,9 @@ final class Store: ObservableObject {
             security = cfg.security
             journals = cfg.journals
             rootURL = URL(fileURLWithPath: cfg.settings.dataPath)
+        } else if restoreConfigBackup() {
+            // 主 config 读不出来，但备份还在（见 restoreConfigBackup）→ 整份恢复
         } else {
-            settings = AppSettings(dataPath: defaultData.path)
-            journals = Journal.defaults
-            settings.defaultJournalId = journals.first?.id ?? ""
             // config 整体解码失败 ≠ 一切归零。比如旧版本读新 config、或文件局部损坏，
             // 整段 decode 会失败 —— 这时候要把能救的段救回来，尤其是 security：
             // 密码参数（salt / verifier）一丢，所有已加密日记就永远解不开了。
@@ -130,6 +135,16 @@ final class Store: ObservableObject {
         // 记忆里的条数变了，界面上（设置页）要跟着变
         memorySink = memory.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
+        }
+        // 提示条统一 2.4 秒自动消失（详见 show 的注释）
+        var toastItem: DispatchWorkItem?
+        toastSink = $toast.sink { [weak self] value in
+            guard let self else { return }
+            toastItem?.cancel()
+            guard value != nil else { return }
+            let item = DispatchWorkItem { [weak self] in self?.toast = nil }
+            toastItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: item)
         }
         // 设置里填的生日 / MBTI 也是「关于这个人」的事实，一并沉淀进记忆
         syncProfileFacts()
@@ -1188,11 +1203,45 @@ final class Store: ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(cfg) {
             try? FileManager.default.createDirectory(at: supportURL, withIntermediateDirectories: true)
-            try? data.write(to: supportURL.appendingPathComponent("config.json"), options: .atomic)
+            let configURL = supportURL.appendingPathComponent("config.json")
+            // 写之前把上一份完整配置留作备份 —— 主文件万一是被某个异常版本写坏的，
+            // 这份「最后一次正确配置」就是退路
+            if let old = try? Data(contentsOf: configURL) {
+                try? old.write(to: supportURL.appendingPathComponent("config.backup.json"), options: .atomic)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                       ofItemAtPath: supportURL.appendingPathComponent("config.backup.json").path)
+            }
+            try? data.write(to: configURL, options: .atomic)
+            // 数据目录里也镜像一份。日记目录（Documents）用户删得极谨慎、清理工具也一般不碰，
+            // 而 Application Support 是卸载器最爱连坐的地方 —— 那边没了这边还在
+            try? data.write(to: rootURL.appendingPathComponent(".config-backup.json"), options: .atomic)
         }
         // 密码参数另存一份。它太重要了 —— 加密日记的钥匙全靠它派生，
         // config 万一哪天解码失败或被重置，这份备份就是唯一的后悔药。
         writeSecurityBackup()
+    }
+
+    /// 主 config 读不出来时的备份链：support 里的上一份好配置 → 数据目录里的镜像。
+    /// 恢复的是「整份配置」，比 rescueConfig 的按段抢救更完整，所以放在它前面试。
+    @discardableResult
+    func restoreConfigBackup() -> Bool {
+        var candidates = [supportURL.appendingPathComponent("config.backup.json"),
+                          rootURL.appendingPathComponent(".config-backup.json")]
+        // init 早期 rootURL 还是默认值，把默认数据目录的镜像也列上
+        if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            candidates.append(docs.appendingPathComponent("日迹日记/.config-backup.json"))
+        }
+        for url in candidates {
+            if let data = try? Data(contentsOf: url),
+               let cfg = try? JSONDecoder().decode(ConfigFile.self, from: data) {
+                settings = cfg.settings
+                security = cfg.security
+                journals = cfg.journals
+                rootURL = URL(fileURLWithPath: cfg.settings.dataPath)
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: 密码参数的抢救与备份
@@ -1269,13 +1318,16 @@ final class Store: ObservableObject {
     }
 
     // MARK: - 提示
+    //
+    // 提示条必须会自己消失。`show()` 走这里没问题，但历史上有十来处是直接
+    // `toast = "…"` 赋值的 —— 那些提示永远不会消失，一直压在界面上。
+    // 所以消失机制统一放到订阅里：toast 一变成非空就排一次自动清除，
+    // 谁赋的值、怎么赋的都逃不掉。
+
+    private var toastSink: AnyCancellable?
 
     func show(_ message: String) {
         toast = message
-        Task {
-            try? await Task.sleep(nanoseconds: 2_200_000_000)
-            await MainActor.run { if self.toast == message { self.toast = nil } }
-        }
     }
 }
 

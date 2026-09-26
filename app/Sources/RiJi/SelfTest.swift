@@ -300,6 +300,21 @@ enum SelfTest {
         check("空目录不会被收养", !store.journals.contains { $0.id == emptyID })
         eq("收养的日记能读到", store.entries.first?.body ?? "", "这是一篇找回的日记。")
         check("收养的日记对界面可见", store.visible.contains { $0.body == "这是一篇找回的日记。" })
+
+        // 备份的语义是「上一份完整配置」，落后一次保存 —— 先存一次让它追平当前状态
+        store.saveConfig()
+        check("support 里有上一份配置备份",
+              FileManager.default.fileExists(atPath: store.dataURL.appendingPathComponent("config.backup.json").path))
+        check("数据目录里有配置镜像",
+              FileManager.default.fileExists(atPath: store.dataURL.appendingPathComponent(".config-backup.json").path))
+        let savedSalt = store.security.salt
+        let journalCount = store.journals.count
+        store.security = SecurityRecord()
+        store.journals = []
+        check("备份整份恢复成功", store.restoreConfigBackup())
+        eq("恢复出密码盐", store.security.salt, savedSalt)
+        check("恢复出日记本名单", store.journals.count == journalCount,
+              "恢复=\(store.journals.count) 期望=\(journalCount) 名单=\(store.journals.map { $0.name }.joined(separator: ","))")
     }
 
     // MARK: 无 frontmatter 的旧文件
