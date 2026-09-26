@@ -19,3 +19,6 @@ screenshots/
 
 # ── 隐私词表（本地专用，绝不入库）──
 tools/privacy-words.local
+
+# ── 视频制作工作目录（含本机路径与 node_modules，不入库）──
+video/
