@@ -1,5 +1,5 @@
 {
-  "version": "0.0.2",
-  "notes": "加密日记跨版本兼容、配置防丢双保险、提示条自动消失",
-  "dmg": "https://github.com/mikizhu520/m-day-diary/raw/main/releases/MDay-0.0.2.dmg"
+  "version": "0.0.3",
+  "notes": "修复中文输入法打字丢字；新增检查新版本提示",
+  "dmg": "https://github.com/mikizhu520/m-day-diary/raw/main/releases/MDay-0.0.3.dmg"
 }

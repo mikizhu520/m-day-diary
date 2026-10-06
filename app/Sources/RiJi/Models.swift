@@ -18,7 +18,7 @@ enum AppInfo {
 
     /// 版本号。改这里的同时要改 build.sh 里的 Info.plist，
     /// 否则「关于」页显示的和系统看到的不一致。
-    static let version = "0.0.2"
+    static let version = "0.0.3"
 
     /// 开发者
     static let author = "Miki Zhu"
