@@ -2327,6 +2327,23 @@ enum SelfTest {
             // 勾选状态跟绘制口径一致：画实心 = 源码 [x]，画空心 = 源码 [ ]
             check("勾上后源码是 [x]", tv.string.hasPrefix("- [x]"))
             check("取消后源码是 [ ]", tv.string.contains("\n- [ ] 已完成"))
+
+            // 对齐：方框竖直中心要落在**文字**的中心上。
+            // minimumLineHeight 撑出来的行高全在文字上方，拿行框居中框就会偏高——
+            // 独立推基准：正文「待办一」的基线（locationForGlyph）+ 该字符实际字体的度量。
+            if let box0 = tv.checkboxBox(at: 0) {
+                let g = lm.glyphIndexForCharacter(at: 6) // 「待」
+                let frag = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: nil)
+                let baselineY = frag.minY + tv.textContainerOrigin.y + lm.location(forGlyphAt: g).y
+                let f = storage.attribute(.font, at: 6, effectiveRange: nil) as? NSFont
+                let expectedMid = baselineY - ((f?.ascender ?? 0) + (f?.descender ?? 0)) / 2
+                check("勾选框与文字同一水平线", abs(box0.midY - expectedMid) < 0.8,
+                      String(format: "框 midY %.2f vs 文字中心 %.2f（行框 midY %.2f）",
+                             box0.midY, expectedMid, frag.midY + tv.textContainerOrigin.y))
+                // 行框中心必须和文字中心拉开距离，否则这条断言没在防真问题
+                check("minimumLineHeight 确实把行框撑高了（防断言失效）",
+                      frag.midY + tv.textContainerOrigin.y < expectedMid - 0.3)
+            }
         }
 
         // 纯函数口径：行首的 [ ] 才算数，正文里的不算

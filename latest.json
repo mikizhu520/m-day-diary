@@ -1,5 +1,5 @@
 {
-  "version": "0.0.4",
-  "notes": "修复待办勾选框点不动的问题",
-  "dmg": "https://github.com/mikizhu520/m-day-diary/raw/main/releases/MDay-0.0.4.dmg"
+  "version": "0.0.5",
+  "notes": "修复待办勾选框与文字不在同一水平线的问题",
+  "dmg": "https://github.com/mikizhu520/m-day-diary/raw/main/releases/MDay-0.0.5.dmg"
 }

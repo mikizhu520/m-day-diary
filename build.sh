@@ -9,7 +9,7 @@ APP="$DIST/MDay.app"
 BUNDLE_ID="com.meiling.riji"
 # 版本号。改这里的同时要改 Models.swift 里的 AppInfo.version，
 # 否则「关于」页显示的和系统看到的不一致。
-VERSION="0.0.4"
+VERSION="0.0.5"
 
 echo "▸ 编译 Swift（release）…"
 cd "$APP_SRC"

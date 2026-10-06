@@ -509,6 +509,11 @@ final class RJTextView: NSTextView {
             // 所以项目符号、引用竖条要按段落自己声明的缩进另行推算文字左边缘。
             let fragment = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
             let rect = fragment.offsetBy(dx: origin.x, dy: origin.y)
+            // ⚠️ 段落设了 minimumLineHeight 时，撑出来的行高全在文字上方（文字贴着 fragment 底），
+            // 拿 fragment.midY 当竖直中心，勾选框/圆点会比文字偏高。
+            // locationForGlyph 的 y = 字形基线相对 fragment 原点的距离，用它 + 字体度量算文字中心。
+            let textMidY = Self.textMidY(layoutManager: lm, glyph: glyph, fragmentTop: rect.minY,
+                                         base: deco.base, style: mdStyle)
             let indent = (ts.attribute(.paragraphStyle, at: loc, effectiveRange: nil)
                             as? NSParagraphStyle)?.headIndent ?? 0
             let textX = rect.minX + tc.lineFragmentPadding + indent
@@ -523,31 +528,41 @@ final class RJTextView: NSTextView {
                     groups[deco.group] = (deco.kind, rect, deco.base, textX)
                 }
             } else {
-                paint(deco.kind, rect: rect, textX: textX,
+                paint(deco.kind, rect: rect, textMidY: textMidY, textX: textX,
                       type: MDType(base: deco.base, style: mdStyle), ink: ink, rightEdge: rightEdge)
             }
         }
 
         // 都是画在文字底下的背景，互不重叠，顺序无所谓
         for (_, g) in groups {
-            paint(g.kind, rect: g.rect, textX: g.textX,
+            paint(g.kind, rect: g.rect, textMidY: g.rect.midY, textX: g.textX,
                   type: MDType(base: g.base, style: mdStyle), ink: ink, rightEdge: rightEdge)
         }
     }
 
+    /// 一行文字的竖直中心（视图坐标）：基线位置 - 字体框的一半高。
+    /// 勾选框、项目符号与文字对齐都以此为准；fragmentTop 传入的是已偏移到视图坐标的行框顶部。
+    static func textMidY(layoutManager lm: NSLayoutManager, glyph: Int,
+                         fragmentTop: CGFloat, base: CGFloat, style: MDStyle) -> CGFloat {
+        let baselineY = fragmentTop + lm.location(forGlyphAt: glyph).y
+        let f = NSFont.systemFont(ofSize: MDType(base: base, style: style).base, weight: .regular)
+        return baselineY - (f.ascender + f.descender) / 2
+    }
+
     // MARK: 各类装饰
 
-    /// 待办勾选框的位置：贴在文字左边缘的左边。
+    /// 待办勾选框的位置：贴在文字左边缘的左边，竖直中心对齐**文字基线**（不是行框——
+    /// minimumLineHeight 撑出来的空行高在文字上方，拿行框居中会偏高）。
     /// 绘制（paint）和点击命中共用同一条公式 —— 两处各算一遍迟早会错位，
     /// 表现出来就是「看着能点，点下去没反应」。
-    private static func checkboxRect(textX: CGFloat, lineRect: NSRect, type t: MDType) -> NSRect {
+    private static func checkboxRect(textX: CGFloat, textMidY: CGFloat, type t: MDType) -> NSRect {
         let s = t.checkBox
         return NSRect(x: textX - t.base * 0.58 - s,
-                      y: lineRect.midY - s / 2,
+                      y: textMidY - s / 2,
                       width: s, height: s)
     }
 
-    private func paint(_ kind: MDDeco.Kind, rect: NSRect, textX: CGFloat,
+    private func paint(_ kind: MDDeco.Kind, rect: NSRect, textMidY: CGFloat, textX: CGFloat,
                        type t: MDType, ink: MDInk, rightEdge: CGFloat) {
         if Self.trace { print("🎨 \(kind) rect=\(rect) textX=\(textX) right=\(rightEdge)") }
         switch kind {
@@ -564,7 +579,7 @@ final class RJTextView: NSTextView {
 
         case .bullet(let depth):
             let d = t.bulletDot
-            let center = NSPoint(x: textX - t.base * 0.52, y: rect.midY)
+            let center = NSPoint(x: textX - t.base * 0.52, y: textMidY)
             let dot = NSRect(x: center.x - d / 2, y: center.y - d / 2, width: d, height: d)
             let path = NSBezierPath(ovalIn: dot)
             // 一级实心、二级以上空心，层级一眼分得开
@@ -579,7 +594,7 @@ final class RJTextView: NSTextView {
 
         case .checkbox(let done):
             let s = t.checkBox
-            let box = Self.checkboxRect(textX: textX, lineRect: rect, type: t)
+            let box = Self.checkboxRect(textX: textX, textMidY: textMidY, type: t)
             let corner = s * 0.32
             let path = NSBezierPath(roundedRect: box, xRadius: corner, yRadius: corner)
             if done {
@@ -707,10 +722,13 @@ final class RJTextView: NSTextView {
         let glyph = lm.glyphIndexForCharacter(at: charIndex)
         let fragment = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
         let rect = fragment.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+        // 与绘制同一口径：竖直中心按基线 + 字体度量算，不拿被 minimumLineHeight 撑高的行框
+        let textMidY = Self.textMidY(layoutManager: lm, glyph: glyph, fragmentTop: rect.minY,
+                                     base: deco.base, style: mdStyle)
         let indent = (ts.attribute(.paragraphStyle, at: charIndex, effectiveRange: nil)
                         as? NSParagraphStyle)?.headIndent ?? 0
         let textX = rect.minX + tc.lineFragmentPadding + indent
-        return Self.checkboxRect(textX: textX, lineRect: rect,
+        return Self.checkboxRect(textX: textX, textMidY: textMidY,
                                  type: MDType(base: deco.base, style: mdStyle))
     }
 
