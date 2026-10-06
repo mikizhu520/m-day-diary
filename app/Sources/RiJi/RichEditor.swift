@@ -684,7 +684,7 @@ final class RJTextView: NSTextView {
     // 改完照常走 textDidChange → 重排，不存在「视图和内容不一致」的问题）。
 
     /// 事件位置落在哪个字符上（取最近的字形，点在行尾空白也算这一行）
-    private func characterIndex(at point: NSPoint) -> Int? {
+    func characterIndex(at point: NSPoint) -> Int? {
         guard let lm = layoutManager, let tc = textContainer,
               let ts = textStorage, ts.length > 0 else { return nil }
         let inContainer = NSPoint(x: point.x - textContainerOrigin.x,
@@ -697,7 +697,7 @@ final class RJTextView: NSTextView {
     }
 
     /// 某个字符所在的待办勾选框（不是待办行则返回 nil）
-    private func checkboxBox(at charIndex: Int) -> NSRect? {
+    func checkboxBox(at charIndex: Int) -> NSRect? {
         guard let lm = layoutManager, let tc = textContainer, let ts = textStorage,
               charIndex >= 0, charIndex < ts.length else { return nil }
         var effective = NSRange()
@@ -729,16 +729,57 @@ final class RJTextView: NSTextView {
     /// 这样 ⌘Z 能撤销、SwiftUI 那边的 text 也会跟着更新。
     private func toggleCheckbox(at charIndex: Int) -> Bool {
         guard let ts = textStorage else { return false }
-        var effective = NSRange()
-        guard let deco = ts.attribute(.mdDeco, at: charIndex, effectiveRange: &effective) as? MDDeco,
-              case .checkbox = deco.kind else { return false }
-
         let ns = ts.string as NSString
-        guard let toggle = LiveMarkdown.taskToggle(in: ns, range: effective) else { return false }
+        let line = ns.lineRange(for: NSRange(location: charIndex, length: 0))
+        // ⚠️ 不能拿属性查询的 effectiveRange 当行用：mdDeco 是自定义 NSObject 属性，
+        // 它的 run 会被字体/颜色等其它属性的边界切成碎片（自检里实测 {0,2}/{2,1}/…），
+        // 拿一小段去正则找 `[ ]` 永远找不到 —— 表现就是「点方框没反应」。
+        // 口径：行内任意字符带 checkbox deco = 待办行，改写查整行。
+        var isTask = false
+        var i = line.location
+        while i < NSMaxRange(line) {
+            var eff = NSRange()
+            if let d = ts.attribute(.mdDeco, at: i, effectiveRange: &eff) as? MDDeco,
+               case .checkbox = d.kind {
+                isTask = true
+                break
+            }
+            i = max(eff.location + max(eff.length, 1), i + 1)
+        }
+        guard isTask else { return false }
+
+        guard let toggle = LiveMarkdown.taskToggle(in: ns, range: line) else { return false }
         guard shouldChangeText(in: toggle.range, replacementString: toggle.replacement) else { return false }
         ts.replaceCharacters(in: toggle.range, with: toggle.replacement)
         didChangeText()
         return true
+    }
+
+    // MARK: 命中检测（自检可直达）
+
+    /// 收集当前所有待办方框的矩形 —— 与 drawDecorations / paint 用同一条公式，
+    /// 自检拿它和 `hitCheckbox(at:)` 对账：画在哪，就得点得中哪。
+    func allCheckboxRects() -> [NSRect] {
+        guard let ts = textStorage, ts.length > 0 else { return [] }
+        let ns = ts.string as NSString
+        var rects: [NSRect] = []
+        var loc = 0
+        while loc < ns.length {
+            let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
+            loc = lineRange.location + max(lineRange.length, 1)
+            guard let deco = ts.attribute(.mdDeco, at: lineRange.location, effectiveRange: nil) as? MDDeco,
+                  case .checkbox = deco.kind else { continue }
+            if let box = checkboxBox(at: lineRange.location) { rects.append(box) }
+        }
+        return rects
+    }
+
+    /// 模拟一次点击：命中方框就切换并返回 true（走的是 mouseDown 同一条路）
+    @discardableResult
+    func hitCheckbox(at point: NSPoint) -> Bool {
+        guard let index = characterIndex(at: point), let box = checkboxBox(at: index) else { return false }
+        guard hitRect(box).contains(point) else { return false }
+        return toggleCheckbox(at: index)
     }
 
     override func mouseDown(with event: NSEvent) {

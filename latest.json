@@ -1,5 +1,5 @@
 {
-  "version": "0.0.3",
-  "notes": "修复中文输入法打字丢字；新增检查新版本提示",
-  "dmg": "https://github.com/mikizhu520/m-day-diary/raw/main/releases/MDay-0.0.3.dmg"
+  "version": "0.0.4",
+  "notes": "修复待办勾选框点不动的问题",
+  "dmg": "https://github.com/mikizhu520/m-day-diary/raw/main/releases/MDay-0.0.4.dmg"
 }

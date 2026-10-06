@@ -40,6 +40,7 @@ enum SelfTest {
         uiScale()
         updateCheck()
         imeInput()
+        checkboxHit()
         persona()
         print("\n──────────────────────")
         print("通过 \(passed) 项，失败 \(failed) 项")
@@ -2287,5 +2288,53 @@ enum SelfTest {
               MarkedText.committed("A😀你好", marked: NSRange(location: 3, length: 2)) == "A😀")
         check("标记区落在 emoji 之后不误伤",
               MarkedText.committed("A😀ni", marked: NSRange(location: 3, length: 2)) == "A😀")
+    }
+
+    // MARK: 待办勾选命中
+
+    private static func checkboxHit() {
+        print("▸ 待办勾选命中")
+        // 真·NSTextView + 真排版：渲染后拿「画出来的方框」中心去点，
+        // 画在哪就得点得中哪，绘制和命中两套坐标才不会各飘各的。
+        let container = NSTextContainer(size: NSSize(width: 400, height: 2000))
+        let lm = NSLayoutManager()
+        lm.addTextContainer(container)
+        let storage = NSTextStorage(string: "- [ ] 待办一\n- [x] 已完成\n普通行不带框\n")
+        storage.addLayoutManager(lm)
+        let tv = RJTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 2000),
+                            textContainer: container)
+        tv.textContainerInset = NSSize(width: 2, height: 10)
+        container.widthTracksTextView = true
+
+        LiveMarkdown.render(storage, baseSize: 16, caretLine: nil, style: .default)
+        lm.ensureLayout(for: container)
+
+        let boxes = tv.allCheckboxRects()
+        check("两个待办行各画出一个方框", boxes.count == 2, "实际 \(boxes.count) 个")
+
+        if boxes.count == 2 {
+            let c0 = NSPoint(x: boxes[0].midX, y: boxes[0].midY)
+            let ok0 = tv.hitCheckbox(at: c0)
+            check("点空方框 → 勾上", ok0 && tv.string.hasPrefix("- [x] 待办一"),
+                  ok0 ? "文本没变成 [x]" : "点击未命中")
+            let c1 = NSPoint(x: boxes[1].midX, y: boxes[1].midY)
+            let ok1 = tv.hitCheckbox(at: c1)
+            check("点已勾方框 → 取消勾", ok1 && tv.string.contains("- [ ] 已完成"))
+            // 普通行中间点一下：不该崩、不该误勾
+            let mid = NSPoint(x: 200, y: boxes[1].maxY + 40)
+            _ = tv.hitCheckbox(at: mid)
+            check("误点普通行不误勾", tv.string.contains("普通行不带框"))
+            // 勾选状态跟绘制口径一致：画实心 = 源码 [x]，画空心 = 源码 [ ]
+            check("勾上后源码是 [x]", tv.string.hasPrefix("- [x]"))
+            check("取消后源码是 [ ]", tv.string.contains("\n- [ ] 已完成"))
+        }
+
+        // 纯函数口径：行首的 [ ] 才算数，正文里的不算
+        let ns = tv.string as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        check("正文里的 [ ] 不被当成勾选框",
+              LiveMarkdown.taskToggle(in: "他说 [ ] 好看", range: NSRange(location: 0, length: 9)) == nil)
+        check("行首缩进的待办能勾",
+              LiveMarkdown.taskToggle(in: ns, range: full) != nil)
     }
 }
