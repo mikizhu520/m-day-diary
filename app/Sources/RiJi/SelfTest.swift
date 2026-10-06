@@ -39,6 +39,7 @@ enum SelfTest {
         zodiac()
         uiScale()
         updateCheck()
+        imeInput()
         persona()
         print("\n──────────────────────")
         print("通过 \(passed) 项，失败 \(failed) 项")
@@ -2259,5 +2260,32 @@ enum SelfTest {
               C.manifestURL.absoluteString.contains("mikizhu520/m-day-diary"))
         check("当前版本号归一后仍是数字段",
               Int(C.normalize(AppInfo.version).split(separator: ".")[0]) != nil)
+    }
+
+    // MARK: 输入法组字
+
+    private static func imeInput() {
+        print("▸ 输入法组字")
+        let none = NSRange(location: NSNotFound, length: 0)
+
+        check("不在组字：原样返回",
+              MarkedText.committed("今天天气不错", marked: none) == "今天天气不错")
+        check("标记区长度为 0：原样返回",
+              MarkedText.committed("你好", marked: NSRange(location: 2, length: 0)) == "你好")
+        check("组字在行尾：剥掉拼音串",
+              MarkedText.committed("今天天气nihao", marked: NSRange(location: 4, length: 5)) == "今天天气")
+        check("组字在中间：只留已确定的两头",
+              MarkedText.committed("我写xx了", marked: NSRange(location: 2, length: 2)) == "我写了")
+        check("整篇都是组字：交出空串",
+              MarkedText.committed("nihao", marked: NSRange(location: 0, length: 5)) == "")
+        check("空文档不崩",
+              MarkedText.committed("", marked: none) == "")
+        check("标记区越界：退回原样（绝不抛异常）",
+              MarkedText.committed("hi", marked: NSRange(location: 9, length: 2)) == "hi")
+        // UTF-16 计数：emoji 占两个单位，切错位置会出现半个代理对（乱码方块）
+        check("emoji 按 UTF-16 计数切得干净",
+              MarkedText.committed("A😀你好", marked: NSRange(location: 3, length: 2)) == "A😀")
+        check("标记区落在 emoji 之后不误伤",
+              MarkedText.committed("A😀ni", marked: NSRange(location: 3, length: 2)) == "A😀")
     }
 }

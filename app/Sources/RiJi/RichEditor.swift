@@ -1,6 +1,34 @@
 import SwiftUI
 import AppKit
 
+// MARK: - 组字临时文本
+//
+// 中文/日文输入法在「组字」期间，会把拼音串和候选字以**临时文本**的形式塞进
+// NSTextView 的标记区（marked range）。它还不是日记内容 —— 用户按空格选定之前，
+// 随时可能整段换掉或取消。
+//
+// 这里踩过的坑（2026-10-06 用户报「用输入法打字，字经常上不去、就消失了」）：
+//   · textDidChange 把 tv.string 整篇交给 SwiftUI 绑定，绑定里于是混进了拼音/候选字；
+//   · 绑定一变，updateNSView 又用旧值 `tv.string = text` 回写，
+//     回写会把 IME 的标记区掀掉 → 正在打的那几个字当场消失。
+// 修法：① 交给外部的永远是「剥掉标记区之后」的正文；② 回写前先看是不是自己发出去的版本。
+
+enum MarkedText {
+    /// 去掉输入法组字中的临时文本，只留已经确定的正文。
+    ///
+    /// - Parameters:
+    ///   - text: 编辑器当前全文（含标记区）
+    ///   - marked: `NSTextView.markedRange()`；不在组字时是 `{NSNotFound, 0}`
+    /// - Returns: 该写进文档与绑定的正文
+    static func committed(_ text: String, marked: NSRange) -> String {
+        guard marked.location != NSNotFound, marked.length > 0,
+              marked.location >= 0, NSMaxRange(marked) <= (text as NSString).length else {
+            return text
+        }
+        return (text as NSString).replacingCharacters(in: marked, with: "")
+    }
+}
+
 // MARK: - 编辑器指令
 
 enum MDAction {
@@ -33,6 +61,9 @@ final class EditorRegistry {
 
     func apply(_ action: MDAction, store: Store? = nil) {
         guard let tv = textView else { return }
+        // 输入法正在组字：这时候插进去的文字会落进标记区里，和拼音搅在一起。
+        // 让用户先把这一轮打完 —— 工具栏不抢这一下。
+        guard !tv.hasMarkedText() else { return }
         tv.window?.makeFirstResponder(tv)
         let selected = tv.selectedRange()
         let source = tv.string as NSString
@@ -235,6 +266,7 @@ struct RichTextEditor: NSViewRepresentable {
         tv.string = text
         tv.setSelectedRange(NSRange(location: 0, length: 0))
         context.coordinator.textView = tv
+        context.coordinator.lastPublished = text
         context.coordinator.appliedFontSize = fontSize
         context.coordinator.appliedStyle = style
         if let custom = tv as? RJTextView { custom.mdStyle = style }
@@ -251,13 +283,22 @@ struct RichTextEditor: NSViewRepresentable {
         guard let tv = scroll.documentView as? NSTextView else { return }
         context.coordinator.textView = tv
 
-        if tv.string != text {
+        // ⚠️ 回写文本有三个前提，缺一个都会「打进去的字消失」：
+        //   ① 本编辑器没在组字 —— 否则 `tv.string` 里含着 IME 的临时文本，
+        //      覆盖式回写会把标记区掀掉，等价于当场取消用户正在打的字；
+        //   ② 这个值不是本编辑器刚发出去的 —— 落盘是延迟的（0.7s），
+        //      store 里随时可能比编辑器旧，回写等于把刚敲的几个字擦掉；
+        //   ③ 确实和当前内容不同（真正的「外部改动」：插模板、AI 改写、切日记）。
+        if !tv.hasMarkedText(),
+           context.coordinator.lastPublished != text,
+           tv.string != text {
             let sel = tv.selectedRange()
             let scrollOrigin = scroll.contentView.bounds.origin
             tv.string = text
             let loc = min(sel.location, tv.string.utf16.count)
             tv.setSelectedRange(NSRange(location: loc, length: 0))
             scroll.contentView.scroll(to: scrollOrigin)
+            context.coordinator.lastPublished = text
             context.coordinator.scheduleRender()
         }
 
@@ -296,6 +337,9 @@ struct RichTextEditor: NSViewRepresentable {
         private var rendering = false
         /// 上一次参与渲染的光标行，用来避免「在同一行里左右移动」也整篇重排
         private var lastCaretLine = -1
+        /// 最后一次「由本编辑器发出去」的正文。外面回来的值和它一样，
+        /// 就说明只是绑定在回声，不是真的外部改动，绝不能拿去覆盖编辑器内容。
+        var lastPublished: String?
 
         init(_ parent: RichTextEditor) { self.parent = parent }
 
@@ -303,7 +347,13 @@ struct RichTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
-            parent.text = tv.string
+            // 组字期间的拼音 / 候选字是输入法的临时缓冲，不属于日记正文。
+            // 只把剥掉标记区之后的内容交出去，文档和绑定里就永远是「已确定」的字。
+            let value = MarkedText.committed(tv.string, marked: tv.markedRange())
+            if value != parent.text {
+                lastPublished = value
+                parent.text = value
+            }
             parent.onActivity()
             scheduleRender()
         }
@@ -692,6 +742,12 @@ final class RJTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // 组字中（输入法还有候选没落定）：先交给系统处理这一下，
+        // 它会先把候选字落定，别在这时候去改写缓冲区里的字符
+        if hasMarkedText() {
+            super.mouseDown(with: event)
+            return
+        }
         if let index = characterIndex(at: convert(event.locationInWindow, from: nil)),
            checkboxBox(at: event) != nil {
             window?.makeFirstResponder(self)
